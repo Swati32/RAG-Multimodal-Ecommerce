@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# Node
+node_modules/
+dist/
+build/
+
+# IaC
+.terraform/
+*.tfstate
+*.tfstate.*
+cdk.out/
+
+# Env / secrets
+.env
+.env.*
+*.pem
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
