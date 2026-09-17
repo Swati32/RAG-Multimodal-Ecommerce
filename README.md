@@ -81,6 +81,7 @@ docs/
   PROGRESS.md  what's implemented, what's next
 src/           implementation, added as each workflow is built
 tests/         unit tests, run without AWS credentials (moto-mocked)
+infra/         AWS CDK (Python) app defining the infrastructure
 ```
 
 ## Development
@@ -90,6 +91,18 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 pytest
+```
+
+## Infrastructure
+
+AWS CDK (Python) — see [PROGRESS.md](docs/PROGRESS.md#infrastructure-infra) for what's defined so far.
+
+```bash
+pip install -e ".[infra]"
+cd infra && npm install
+npx cdk synth      # generates CloudFormation templates, no AWS credentials needed
+npx cdk deploy --all   # needs AWS credentials configured, and starts real billing
+npx cdk destroy --all  # tear down between work sessions - see the cost discipline in docs/designs/05-observability-cost.md
 ```
 
 ## Design docs

@@ -25,13 +25,25 @@ Not yet implemented:
 - OpenSearch/Neptune bulk loader scripts (real client calls, not just document shaping)
 - Neptune graph-edge builder (category hierarchy, co-purchase, brand)
 - Step Functions state machine wiring the stages together
-- Delta-batch/refresh-cadence driver
-- Infrastructure as code for any of the above (blocked on the two open decisions below)
+- Daily EventBridge trigger for delta refreshes
+
+## Infrastructure (`infra/`)
+
+**Resolved: AWS CDK (Python)** — one language across app code and infra, rather than adding Terraform/HCL as a second one.
+
+`cdk synth` succeeds with no AWS credentials (verified — it's pure template generation); `cdk deploy` needs real credentials and starts real billing the moment it runs, so it hasn't been run.
+
+| Stack | Resources | Status |
+| --- | --- | --- |
+| `RagEcommerce-Data` | S3 bucket (raw/processed/query-images prefixes), DynamoDB Products + Reviews tables | Written, synthesized, not deployed |
+| `RagEcommerce-Search` | Single-node OpenSearch domain, smallest instance | Written, synthesized, not deployed |
+| `RagEcommerce-Graph` | Neptune cluster + instance, in a NAT-free isolated VPC (a NAT gateway alone would cost ~$32/month) | Written, synthesized, not deployed |
+
+Every resource uses `RemovalPolicy.DESTROY` so `cdk destroy` fully tears the stack down between work sessions, per the cost discipline in [05](designs/05-observability-cost.md).
 
 ## Open decisions (not yet resolved)
 
-- IaC tool: Terraform vs AWS CDK
-- AWS credential setup on this machine for the target account/region
+- AWS credential setup on this machine for the target account/region — required before `cdk deploy` can run
 - Whether the demo needs to be always-live or can be brought up on demand (affects whether the DynamoDB-graph swap for Neptune is worth doing up front — see [05](designs/05-observability-cost.md))
 
 ## Suggested build order

@@ -17,6 +17,10 @@ dev = [
     "pytest>=8.0",
     "moto[dynamodb]>=5.0",
 ]
+infra = [
+    "aws-cdk-lib>=2.150",
+    "constructs>=10.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

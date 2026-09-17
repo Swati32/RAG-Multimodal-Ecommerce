@@ -72,7 +72,7 @@ The dataset's ASIN is used as `product_id` everywhere (DynamoDB key, OpenSearch 
 
 ## Open questions
 
-- IaC tool for the Step Functions / Glue / Neptune bulk-loader setup (Terraform vs CDK) — not yet decided
+- Resolved: AWS CDK (Python) is the IaC tool — see [../PROGRESS.md](../PROGRESS.md#infrastructure-infra); the S3/DynamoDB/OpenSearch/Neptune stacks are written and synthesize cleanly, not yet deployed
 - Whether the graph builder uses the Neptune Gremlin or openCypher bulk loader — pick based on which query language SearchAgent's counterpart, GraphAgent, ends up using (see [02](02-retrieval-agents.md))
 
 ## Status
