@@ -62,7 +62,7 @@ Each delta run exercises the pipeline as *updates*, not just inserts:
 - OpenSearch: document upsert by chunk id — only the delta's chunks go through Bedrock Batch re-embedding, keeping re-embedding cost proportional to what changed
 - Neptune: edge upserts (merge, not blind create), so replaying a delta batch never duplicates edges
 
-**Trigger**: a manually invoked Step Functions execution naming the next delta partition, rather than a live EventBridge schedule — showing "the system ingesting an update" on demand is more useful for a portfolio demo than waiting on a cron. An EventBridge rule is a one-line addition later if a live cadence is ever needed.
+**Trigger**: an EventBridge scheduled rule running once daily, invoking the Step Functions execution for the next delta partition — a live cadence rather than a manual one, so the system continuously demonstrates ingesting updates without someone kicking off each run.
 
 This also gives a concrete staleness test: run two delta batches with a co-purchase signal that changes between them, and confirm the graph and search index both reflect the newer state.
 

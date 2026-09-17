@@ -1,4 +1,5 @@
 from .models import Chunk, Product, Review
+from .summarization import ClaudeClient, summarize_review_if_long
 
 # Word count is used as a token-count proxy to avoid a tokenizer dependency;
 # it's a deliberate approximation, not exact token counting.
@@ -49,7 +50,14 @@ def chunk_product(product: Product) -> list[Chunk]:
     return chunks
 
 
-def chunk_review(review: Review) -> list[Chunk]:
+def chunk_review(review: Review, claude_client: ClaudeClient | None = None) -> list[Chunk]:
+    text = review.text
+    if claude_client is not None:
+        # Design doc 02, "Agents vs Direct LLM Calls": summarize a long review
+        # with a direct Claude call before chunking, rather than splitting it
+        # blind and losing the review's overall point across pieces.
+        text = summarize_review_if_long(text, claude_client)
+
     return [
         Chunk(
             chunk_id=f"{review.product_id}#review-{review.review_id}-{i}",
@@ -58,5 +66,5 @@ def chunk_review(review: Review) -> list[Chunk]:
             text=piece,
             review_id=review.review_id,
         )
-        for i, piece in enumerate(split_text(review.text))
+        for i, piece in enumerate(split_text(text))
     ]

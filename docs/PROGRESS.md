@@ -13,9 +13,10 @@ Tracks implementation status per workflow. Update this file as each workflow mov
 
 ## Ingestion & Refresh Pipeline — what's done
 
-Implemented and unit-tested (9 tests, no AWS credentials needed — DynamoDB is moto-mocked):
+Implemented and unit-tested (12 tests, no AWS credentials needed — DynamoDB is moto-mocked, Claude calls are stubbed):
 - `src/ingestion/models.py` — `Product`, `Review`, `Chunk`
 - `src/ingestion/chunking.py` — description/review splitting with overlap, tag-summary generation (see [01](designs/01-ingestion-pipeline.md#chunking-strategy))
+- `src/ingestion/summarization.py` — direct Claude call (via Bedrock) to summarize a long review before chunking, per the "Agents vs Direct LLM Calls" decision in [02](designs/02-retrieval-agents.md); injected as a dependency so `chunk_review` stays testable without live Bedrock access
 - `src/ingestion/dynamo_writer.py` — idempotent product/review upserts
 - `src/ingestion/opensearch_documents.py` — chunk-to-document mapping with the filter fields from [02](designs/02-retrieval-agents.md#opensearch-metadata--filtering), plus the index mapping
 

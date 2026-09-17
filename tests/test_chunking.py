@@ -60,3 +60,17 @@ def test_chunk_review_carries_review_id():
     assert len(chunks) == 1
     assert chunks[0].review_id == "R1"
     assert chunks[0].chunk_id == "P1#review-R1-0"
+
+
+def test_chunk_review_summarizes_long_text_via_claude_client_before_splitting():
+    class StubClaudeClient:
+        def summarize(self, prompt: str) -> str:
+            return "Short summary."
+
+    long_text = " ".join(["word"] * 400)
+    review = Review(review_id="R1", product_id="P1", rating=3, text=long_text, timestamp=0)
+
+    chunks = chunk_review(review, claude_client=StubClaudeClient())
+
+    assert len(chunks) == 1
+    assert chunks[0].text == "Short summary."
