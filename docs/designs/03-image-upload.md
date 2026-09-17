@@ -9,6 +9,7 @@ A user can upload a photo ("find products like this") instead of, or alongside, 
 ## Data flow
 
 ```mermaid
+%%{init: {'flowchart': {'curve': 'linear'}}}%%
 flowchart LR
     U[User uploads image] --> API[API Gateway + Lambda]
     API --> S3U[S3: query-images/ prefix]

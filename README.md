@@ -7,6 +7,7 @@ A multimodal RAG assistant over e-commerce product data, built entirely on AWS-n
 ## Architecture
 
 ```mermaid
+%%{init: {'flowchart': {'curve': 'linear'}}}%%
 flowchart TB
     subgraph Client
         FE[Frontend: S3 + CloudFront SPA]

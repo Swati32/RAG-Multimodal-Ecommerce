@@ -9,6 +9,7 @@ Loads the Amazon Reviews 2023 dataset (5,000 products, plus their reviews and im
 ## Data flow
 
 ```mermaid
+%%{init: {'flowchart': {'curve': 'linear'}}}%%
 flowchart TD
     A[S3 raw zone: reviews.jsonl, metadata.jsonl, images] --> B[Glue job: normalize + chunk]
     B --> C[(DynamoDB: Products, Reviews)]
