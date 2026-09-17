@@ -80,6 +80,16 @@ docs/
   designs/     one detailed design doc per workflow: decisions + reasoning
   PROGRESS.md  what's implemented, what's next
 src/           implementation, added as each workflow is built
+tests/         unit tests, run without AWS credentials (moto-mocked)
+```
+
+## Development
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+pytest
 ```
 
 ## Design docs
