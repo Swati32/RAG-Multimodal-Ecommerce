@@ -58,6 +58,33 @@ Latency isn't a constraint for this project (see Non-Functional Requirements), s
 - **Batch job partial failures**: a Bedrock Batch or Glue job failing partway through must be safely re-runnable (ties to idempotency in [01](01-ingestion-pipeline.md))
 - **Cost creep**: OpenSearch and Neptune bill for provisioned capacity even when idle, and their Serverless variants have high minimum floors, not zero — smallest provisioned size plus deliberate teardown between sessions is the actual lever
 
+## Evaluation framework
+
+**What's evaluated**: retrieval quality, answer groundedness, and comparisons across candidate configurations — different LLMs for generation, different embedding models, single-agent vs multi-agent retrieval (see [02](02-retrieval-agents.md)), different chunking strategies — so architecture decisions are backed by a number, not just a design-doc argument.
+
+**Deterministic metrics** (cheap, no LLM call): precision@k / recall@k against a hand-labeled eval set (query → expected `product_id`s), citation presence, latency, cost per query.
+
+**LLM-as-judge** (for what exact-match can't cover, like "did the model make something up"): a separate Claude call — ideally a different/stronger model than the one being evaluated, to avoid self-grading bias — scores each (question, answer, retrieved context) triple against a rubric: groundedness (1–5), relevance (1–5), and per-claim citation accuracy (does the citation actually support the claim, not just exist).
+
+**Held-out eval set**: roughly 50–100 hand-labeled query/expected-product pairs across representative categories, kept separate from anything used in prompt or config tuning, so evaluation doesn't just reward overfitting to the eval set itself.
+
+**Comparison harness**: the eval set runs through each candidate configuration as a batch job, producing one score per metric per configuration — this is how "is multi-agent retrieval actually better than single-agent here" gets answered empirically rather than argued.
+
+**CloudWatch integration**: each eval run publishes custom metrics via `PutMetricData` under a dedicated namespace (`RAGEcommerce/Eval`), with dimensions for `Model`, `AgentConfig`, and `EmbeddingModel` so scores are comparable across configurations and over time, alongside the infrastructure metrics above:
+
+| Metric | What it tracks |
+| --- | --- |
+| `RetrievalPrecisionAtK` | Deterministic retrieval quality |
+| `CitationGroundingRate` | Fraction of claims traceable to a retrieved chunk |
+| `JudgeGroundednessScore` | LLM-judge groundedness rating |
+| `JudgeRelevanceScore` | LLM-judge relevance rating |
+| `AnswerLatencyMs` | End-to-end latency for the eval run |
+| `CostPerQueryUsd` | Bedrock + retrieval cost per query |
+
+A CloudWatch alarm on a sustained drop in `JudgeGroundednessScore` or `CitationGroundingRate` flags a regression (e.g. after a prompt or model change) the same way an infra alarm flags a latency spike.
+
+**When it runs**: manually triggered after any change to prompts, model versions, retrieval configuration, or chunking strategy — not continuously. A portfolio project doesn't need a live CI eval gate, and each run costs Bedrock tokens.
+
 ## Status
 
 Not started — see [../PROGRESS.md](../PROGRESS.md)

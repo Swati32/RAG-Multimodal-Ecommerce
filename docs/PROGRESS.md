@@ -16,7 +16,6 @@ Tracks implementation status per workflow. Update this file as each workflow mov
 - IaC tool: Terraform vs AWS CDK
 - AWS credential setup on this machine for the target account/region
 - Whether the demo needs to be always-live or can be brought up on demand (affects whether the DynamoDB-graph swap for Neptune is worth doing up front — see [05](designs/05-observability-cost.md))
-- Eval strategy for retrieval quality and answer groundedness
 
 ## Suggested build order
 
