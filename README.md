@@ -95,12 +95,13 @@ pytest
 
 ## Infrastructure
 
-AWS CDK (Python) — see [PROGRESS.md](docs/PROGRESS.md#infrastructure-infra) for what's defined so far.
+AWS CDK (Python) — see [PROGRESS.md](docs/PROGRESS.md#infrastructure-infra) for what's defined so far. `cdk.json` points `cdk` at `../.venv/bin/python3`, so no need to activate the venv first — just make sure `pip install -e ".[infra]"` has been run in it at least once.
 
 ```bash
 pip install -e ".[infra]"
 cd infra && npm install
-npx cdk synth      # generates CloudFormation templates, no AWS credentials needed
+npx cdk synth          # generates CloudFormation templates, no AWS credentials needed
+npx cdk bootstrap      # one-time per account/region, needs AWS credentials
 npx cdk deploy --all   # needs AWS credentials configured, and starts real billing
 npx cdk destroy --all  # tear down between work sessions - see the cost discipline in docs/designs/05-observability-cost.md
 ```
