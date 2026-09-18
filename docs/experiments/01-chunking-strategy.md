@@ -33,3 +33,9 @@ At the *same* chunk density as the original default (1.1 chunks/review), sentenc
 `src/ingestion/chunking.py` updated accordingly; `tests/test_chunking.py` updated to match.
 
 **Known limitation, not handled**: a single sentence longer than the word budget becomes its own oversized chunk (no fallback split within a sentence). Not worth the complexity for this dataset — real product reviews essentially never have a single 300+ word sentence.
+
+## Follow-up: revisit once retrieval is live
+
+This decision rests on structural proxy metrics only (boundary cleanliness, chunk density) — the cheapest of the three validation tiers described in design doc [05](../designs/05-observability-cost.md)'s Evaluation Framework, not the ground-truth one. It says nothing about actual retrieval quality.
+
+**Once OpenSearch indexing and embeddings exist** (steps 4-5 of [01](../designs/01-ingestion-pipeline.md), not yet built — see [PROGRESS.md](../PROGRESS.md)), re-run this comparison through the real comparison harness: index chunks from both `word_count` and `sentence_aware` strategies, run the same labeled query set through each, and compare precision@k and citation grounding rate. Confirm sentence-aware still wins on the metric that actually matters, or revise this decision if it doesn't.

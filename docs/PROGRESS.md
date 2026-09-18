@@ -51,6 +51,11 @@ Every resource uses `RemovalPolicy.DESTROY` so `cdk destroy` fully tears the sta
 
 - Whether the demo needs to be always-live or can be brought up on demand (affects whether OpenSearch stays provisioned-and-idle or gets torn down between sessions — see [05](designs/05-observability-cost.md))
 
+## Follow-ups tracked for later
+
+- **Re-validate the chunking strategy once retrieval is live** ([experiments/01](experiments/01-chunking-strategy.md#follow-up-revisit-once-retrieval-is-live)): the sentence-aware decision currently rests on structural metrics only, not actual retrieval quality — re-run it through the real comparison harness once OpenSearch indexing + embeddings exist
+- **Run the summarization prompting experiment** ([experiments/02](experiments/02-summarization-prompting.md)): blocked on a one-time Anthropic model use-case form for this Bedrock account
+
 ## Suggested build order
 
 1. Ingestion & Refresh Pipeline — nothing else has data to work with until this exists
