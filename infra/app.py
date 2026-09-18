@@ -19,6 +19,7 @@ SearchStack(app, "RagEcommerce-Search", env=env)
 GlueStack(
     app,
     "RagEcommerce-Glue",
+    data_bucket=data_stack.data_bucket,
     products_table=data_stack.products_table,
     reviews_table=data_stack.reviews_table,
     env=env,

@@ -13,19 +13,23 @@ Tracks implementation status per workflow. Update this file as each workflow mov
 
 ## Ingestion & Refresh Pipeline — what's done
 
-Implemented and unit-tested (13 tests, no AWS credentials needed — DynamoDB is moto-mocked, Claude calls are stubbed):
+Implemented and unit-tested (16 tests, no AWS credentials needed — DynamoDB is moto-mocked, Claude calls are stubbed):
 - `src/ingestion/models.py` — `Product`, `Review`, `Chunk`
 - `src/ingestion/chunking.py` — sentence-aware description/review splitting, tag-summary generation (see [01](designs/01-ingestion-pipeline.md#chunking-strategy) and [Experiment 01](experiments/01-chunking-strategy.md))
 - `src/ingestion/summarization.py` — direct Claude call (via Bedrock) to summarize a long review before chunking, per the "Agents vs Direct LLM Calls" decision in [02](designs/02-retrieval-agents.md); injected as a dependency so `chunk_review` stays testable without live Bedrock access. Prompt wording still the original default — see [Experiment 02](experiments/02-summarization-prompting.md), blocked on Bedrock account setup
 - `src/ingestion/dynamo_writer.py` — idempotent product/review upserts
+- `src/ingestion/dynamo_reader.py` — the inverse: DynamoDB item → `Product`/`Review`, plus a paginated `scan_all_items`
 - `src/ingestion/opensearch_documents.py` — chunk-to-document mapping with the filter fields from [02](designs/02-retrieval-agents.md#opensearch-metadata--filtering), plus the index mapping
 
 **Deployed and loaded (steps 1-2 of the pipeline, done for real, as an actual Glue job)**: `RagEcommerce-Data`, `RagEcommerce-Search`, and `RagEcommerce-Glue` are all live in AWS (account 953146692069, us-east-2) — see Infrastructure below. `rag-ecommerce-load-dataset` (a Glue Python Shell job, `infra/glue_scripts/load_dataset.py`) streams the Amazon Reviews 2023 "All_Beauty" category from Hugging Face (no full download) and writes products/reviews into the real DynamoDB tables — confirmed via a real `start-job-run` (`SUCCEEDED`, 97s) and `scan`: **5,000 products and 10,313 reviews**.
 
 This replaced an earlier local-script version (`scripts/load_dataset.py`, since deleted) that deviated from design doc 01's Glue-job spec without flagging it — corrected per the Implementation Fidelity rule in CLAUDE.md. Getting the real Glue job working surfaced three environment gotchas now recorded in CLAUDE.md: Python Shell only supports Python 3.9 (no `X | None` syntax), `--extra-py-files` zips need manual `sys.path` handling, and Python Shell doesn't auto-inject `--JOB_NAME`.
 
-Not yet implemented (steps 3-5 of the pipeline, to be built as Glue jobs too):
-- Wiring chunking + summarization into a Glue job (the current load job only does step 2, raw records → DynamoDB — no LLM call happens there by design, see [02](designs/02-retrieval-agents.md))
+**Step 3 done for real too**: `rag-ecommerce-chunk-and-summarize` (`infra/glue_scripts/chunk_and_summarize.py`) reads every product/review from DynamoDB, chunks them (sentence-aware, summarizing long reviews via Claude Haiku first), and writes the result to `s3://.../processed/chunks.jsonl`. Run via `start-job-run`, `SUCCEEDED` in 123s: **20,338 chunk records** (5,026 description + 5,000 tag_summary + 10,313 review). New module: `src/ingestion/dynamo_reader.py` (the inverse of `dynamo_writer` — DynamoDB item → `Product`/`Review`, plus a paginated `scan_all_items`).
+
+One more environment gotcha found and recorded in CLAUDE.md: Glue Python Shell bundles a 2022-era boto3/botocore that predates Bedrock's service model (`UnknownServiceError: Unknown service: 'bedrock-runtime'`) — fixed by forcing a current `boto3` via `--additional-python-modules`.
+
+Not yet implemented (steps 4-5 of the pipeline, to be built as Glue jobs too):
 - Bedrock Batch embedding manifest builder + invocation
 - OpenSearch bulk loader script (real client calls, not just document shaping)
 - DynamoDB graph-edge builder (category hierarchy, co-purchase, brand)
@@ -44,7 +48,7 @@ Not yet implemented (steps 3-5 of the pipeline, to be built as Glue jobs too):
 | --- | --- | --- |
 | `RagEcommerce-Data` | S3 bucket, DynamoDB Products (5,000 items) + Reviews (10,313 items) + GraphEdges (empty) tables | `CREATE_COMPLETE`, loaded |
 | `RagEcommerce-Search` | Single-node OpenSearch domain (t3.small.search), 1 node | `CREATE_COMPLETE`, no index created yet |
-| `RagEcommerce-Glue` | `rag-ecommerce-load-dataset` Glue Python Shell job (1 DPU), its IAM role, and the S3 script/module assets it reads | `CREATE_COMPLETE`, job run `SUCCEEDED` |
+| `RagEcommerce-Glue` | `rag-ecommerce-load-dataset` + `rag-ecommerce-chunk-and-summarize` Glue Python Shell jobs (1 DPU each), shared IAM role, S3 script/module assets | `CREATE_COMPLETE`, both job runs `SUCCEEDED` |
 
 Not deployed: nothing else — `RagEcommerce-Graph` (Neptune) was deleted, see above.
 
