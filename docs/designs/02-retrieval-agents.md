@@ -92,6 +92,17 @@ Every indexed chunk carries structured fields alongside its vector, so filtering
 
 These fields go in the `filter` clause of a `bool` query (not `must`), alongside the `knn`/`match` clauses — filter context isn't scored and OpenSearch caches it, so more filter fields don't slow the semantic part down. This is what lets SearchAgent combine "under $50" with "good bass" in one round trip.
 
+## Indexing strategy
+
+**ANN engine: `lucene`, not `nmslib`/`faiss`.** OpenSearch's k-NN plugin supports three engines for the HNSW vector index; `lucene` is native to OpenSearch itself, with no separate native library to install/manage — `nmslib` and `faiss` exist mainly for the recall/speed tuning that matters at millions of vectors. At this dataset's scale (5,000 products, roughly 15k chunks), that tradeoff isn't real — exact k-NN would perform fine here too — so there was nothing to benchmark, just an ops-simplicity call consistent with the smallest-footprint stance elsewhere in this design. See `src/ingestion/opensearch_documents.py`.
+
+**Similarity metric: cosine (`cosinesimil`)**, matching how embedding similarity is conventionally compared; revisit only if Titan's embedding documentation turns out to recommend dot product on pre-normalized vectors instead.
+
+**Two indexing decisions genuinely worth deciding deliberately, deferred to when SearchAgent is actually implemented** (not yet — see [PROGRESS.md](../PROGRESS.md)), because unlike the engine choice above they affect retrieval *quality*, not just ops burden:
+
+- **Chunk granularity ("small-to-big")**: right now a retrieved chunk *is* what gets passed to the generator. A common alternative is indexing small, precise chunks for matching but expanding to a larger context window (the full review, or neighboring chunks) before generation — a chunk can match a query well while being too narrow to actually answer from.
+- **Hybrid combination method**: the `bool` query above combines `knn` and `match` naively (both present, OpenSearch's default scoring). OpenSearch also has a native hybrid query with a score-normalization pipeline, and reciprocal rank fusion (RRF) is a common alternative — whether the naive combination is good enough is an empirical question for the retrieval-quality eval in [05](05-observability-cost.md), not something to assume.
+
 ## Answer format
 
 The API returns structured JSON, not a single prose string:

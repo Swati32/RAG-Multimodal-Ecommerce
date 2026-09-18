@@ -2,6 +2,11 @@ from .models import Chunk, Product
 
 EMBEDDING_DIM = 1024  # Titan Text Embeddings v2 output size
 
+# engine: lucene, not nmslib/faiss - native to OpenSearch, no separate native
+# library to manage. At this dataset's scale (~5k products, ~15k chunks) the
+# HNSW-vs-exact-kNN tradeoff nmslib/faiss exist for doesn't matter; lucene
+# fits the project's smallest-ops-burden stance. See docs/designs/
+# 02-retrieval-agents.md, "Indexing Strategy".
 INDEX_MAPPING = {
     "settings": {"index": {"knn": True}},
     "mappings": {
@@ -20,7 +25,7 @@ INDEX_MAPPING = {
             "embedding": {
                 "type": "knn_vector",
                 "dimension": EMBEDDING_DIM,
-                "method": {"engine": "nmslib", "name": "hnsw", "space_type": "cosinesimil"},
+                "method": {"engine": "lucene", "name": "hnsw", "space_type": "cosinesimil"},
             },
         }
     },
