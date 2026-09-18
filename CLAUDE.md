@@ -1,5 +1,9 @@
 # CLAUDE.md
 
+## Implementation Fidelity
+- Follow the design docs (docs/designs/) as written - pipeline stages specced as Glue jobs must be implemented as real AWS Glue jobs, not local scripts standing in for them
+- If an implementation must deviate from what a design doc says (scope cut, different approach, skipped step), say so explicitly rather than silently substituting - flag the deviation and why, don't let docs and reality drift apart quietly
+
 ## Environment
 - AWS auth uses `aws login` (session-based, expires ~hourly) - reauthenticate with `aws login`, not `aws configure`
 - `cd infra && npx cdk <synth|deploy|destroy>` - CDK CLI is a local npm devDependency, not global; `cdk.json` points the app at `../.venv/bin/python3` directly, so the venv doesn't need activating first
