@@ -24,7 +24,7 @@ Use an **agent** (a tool-calling loop where the model decides the next action fr
 
 1. **SearchAgent** — OpenSearch hybrid text search (BM25 + k-NN vectors) plus structured filters
 2. **ImageAgent** — OpenSearch k-NN over image embeddings, for photo-based queries
-3. **GraphAgent** — Neptune traversal (category hierarchy, co-purchase, brand)
+3. **GraphAgent** — traversal over the DynamoDB adjacency-list graph (category hierarchy, co-purchase, brand); not Neptune — this AWS account's plan doesn't support it (see [01](01-ingestion-pipeline.md#graph-storage-dynamodb-not-neptune))
 4. **LookupAgent** — DynamoDB direct lookup by product/review id
 
 ```mermaid

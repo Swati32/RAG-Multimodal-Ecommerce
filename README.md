@@ -27,9 +27,8 @@ flowchart TB
     end
 
     subgraph Data Stores
-        DDB[(DynamoDB)]
+        DDB[(DynamoDB: products, reviews, graph edges)]
         OS[(OpenSearch)]
-        NEP[(Neptune)]
     end
 
     subgraph Bedrock
@@ -49,7 +48,7 @@ flowchart TB
     LAMBDA --> EMB --> RTR
     RTR --> SRCH --> OS
     RTR --> IMG --> OS
-    RTR --> GRF --> NEP
+    RTR --> GRF --> DDB
     RTR --> LKP --> DDB
     RTR --> GEN --> VER --> LAMBDA
     LAMBDA --> FE
@@ -57,7 +56,6 @@ flowchart TB
     S3RAW --> SF --> ETL
     ETL --> DDB
     ETL --> BATCH --> OS
-    ETL --> NEP
 ```
 
 **Tech stack**
@@ -68,7 +66,7 @@ flowchart TB
 | API | API Gateway + Lambda | Entry point, CORS to the SPA |
 | Structured metadata | DynamoDB | Product / review records, pay-per-use |
 | Hybrid retrieval | Amazon OpenSearch Service | BM25 + k-NN + structured filters, provisioned (not Serverless) |
-| Knowledge graph | Amazon Neptune | Category hierarchy, co-purchase, brand edges, provisioned |
+| Knowledge graph | DynamoDB (adjacency-list table) | Category hierarchy, co-purchase, brand edges — not Neptune; this AWS account's plan doesn't support it (see [05](docs/designs/05-observability-cost.md)) |
 | Embeddings + generation | Amazon Bedrock | Titan embeddings, Claude generation + verification |
 | Ingestion / ETL | AWS Glue or Fargate + Step Functions | Batch load and periodic delta refresh |
 | Region | us-east-2 | |
@@ -118,6 +116,13 @@ Each major workflow has its own design doc covering the architecture, the decisi
 - [06 — Frontend Hosting](docs/designs/06-frontend-hosting.md)
 
 See [docs/PROGRESS.md](docs/PROGRESS.md) for implementation status.
+
+## Experiments
+
+Before implementing a pipeline stage that has real design choices to make, we run a small experiment rather than assume — results and the strategy actually chosen are recorded under [docs/experiments/](docs/experiments/):
+
+- [01 — Chunking strategy](docs/experiments/01-chunking-strategy.md): compared fixed-size word-count splitting (with and without overlap) against sentence-aware splitting on 40 real reviews. **Chosen: sentence-aware, 300-word budget** — same chunk density as the original default, but 100% of chunks end on a clean sentence boundary vs. 90.9% for word-count splitting, and no overlap is needed since nothing gets cut mid-sentence.
+- [02 — Summarization prompting](docs/experiments/02-summarization-prompting.md): LLM-as-judge comparison of 3 candidate prompts for summarizing long reviews before chunking. **Blocked** on a one-time Bedrock model-access step on this AWS account; not yet run — the current default prompt stays until it is.
 
 ## Development principles
 

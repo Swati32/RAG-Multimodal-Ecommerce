@@ -10,23 +10,21 @@ What to monitor across the stack, the failure modes worth watching for, and how 
 
 **Target: under $100/month total AWS spend.**
 
-**The trap to avoid**: OpenSearch Serverless and Neptune Serverless both advertise "scale to zero" but carry minimum capacity floors that bill even while idle — OpenSearch Serverless's minimum (2 OCU indexing + 2 OCU search) alone can run several hundred dollars a month, and Neptune Serverless's minimum NCU floor isn't free either. Neither is safe under this cap. **Provisioned, not Serverless, for both — smallest instance size available.**
+**The trap to avoid**: OpenSearch Serverless advertises "scale to zero" but carries a minimum capacity floor (2 OCU indexing + 2 OCU search) that bills even while idle — several hundred dollars a month on its own. Not safe under this cap. **Provisioned, not Serverless — smallest instance size available.**
 
 Latency isn't a constraint for this project (see Non-Functional Requirements), so there's no performance tradeoff being traded away by choosing the cheapest instance/capacity size anywhere — it's a straightforward cost win.
 
 | Service | Choice | Why |
 | --- | --- | --- |
 | OpenSearch | Single-node provisioned domain, smallest instance size, no dedicated master | Cheapest provisioned option; still bills 24/7 while it exists |
-| Neptune | Smallest provisioned instance, or replace with a DynamoDB adjacency-list graph (`PK=node`, `SK=edge_type#target`) | The DynamoDB swap removes this cost entirely (pay-per-request) at the cost of native Gremlin/openCypher traversal — acceptable since the graph queries needed (category hierarchy, co-purchase, brand) are 1–2 hop lookups |
+| Knowledge graph | DynamoDB adjacency-list (`PK=node`, `SK=edge_type#target`) — no Neptune | Not just cheaper: a real deploy attempt showed this AWS account's plan doesn't support Neptune at all (`CREATE_FAILED`, only `aurora-postgresql` available). The graph queries needed (category hierarchy, co-purchase, brand) are 1–2 hop lookups DynamoDB handles fine — see [01](01-ingestion-pipeline.md#graph-storage-dynamodb-not-neptune) |
 | DynamoDB, S3, Lambda, API Gateway | Pay-per-use as designed | Negligible cost at this scale, no idle risk |
 | Bedrock | Batch for bulk ingestion, capped max-output-tokens per query | Batch is cheaper per-token; the output cap bounds worst-case cost per query |
 | Dataset | 5,000 products (confirmed, halved from an original 5–10k estimate) | Bounds index/storage size regardless of engine choice |
 
-**Discipline, not just sizing**: the biggest lever is not leaving OpenSearch/Neptune running between work sessions — tear them down via IaC and recreate before each session rather than paying 24/7 for infrastructure used a few hours a week.
+**Discipline, not just sizing**: the biggest lever is not leaving OpenSearch running between work sessions — tear it down via IaC and recreate before each session rather than paying 24/7 for infrastructure used a few hours a week.
 
 **Guardrails**: AWS Budgets with two SNS-notified thresholds, an $80 warning and a $100 alert; tag every resource with a project tag so Cost Explorer can isolate this project's spend.
-
-**Open question**: does the demo need to be always-live (e.g. for an interview walkthrough), or can it be brought up on demand? That decides whether provisioned-and-idle OpenSearch/Neptune is acceptable, or whether the DynamoDB-graph swap is worth doing up front.
 
 ## Metrics to monitor
 
@@ -34,9 +32,8 @@ Latency isn't a constraint for this project (see Non-Functional Requirements), s
 
 | Service | Watch |
 | --- | --- |
-| DynamoDB | Throttled requests, consumed read/write capacity |
+| DynamoDB | Throttled requests, consumed read/write capacity (including the `GraphEdges` table) |
 | OpenSearch | Cluster health, query latency p50/p95, JVM memory pressure |
-| Neptune | Query latency, Gremlin/openCypher error rate |
 | Bedrock | Invocation latency, throttling errors, token usage (cost driver) |
 | Step Functions | Failed executions per ingestion run |
 | Lambda (API + agents) | Error rate, cold start duration, concurrent executions |
@@ -56,7 +53,7 @@ Latency isn't a constraint for this project (see Non-Functional Requirements), s
 - **Cold starts**: Lambda cold starts on the agent path add latency spikes; consider provisioned concurrency if p95 matters for a demo
 - **Throttling under load**: OpenSearch and Bedrock both throttle under burst traffic — exercise backoff logic (see [04](04-inference-serving.md)) in testing, not just in code
 - **Batch job partial failures**: a Bedrock Batch or Glue job failing partway through must be safely re-runnable (ties to idempotency in [01](01-ingestion-pipeline.md))
-- **Cost creep**: OpenSearch and Neptune bill for provisioned capacity even when idle, and their Serverless variants have high minimum floors, not zero — smallest provisioned size plus deliberate teardown between sessions is the actual lever
+- **Cost creep**: OpenSearch bills for provisioned capacity even when idle, and its Serverless variant has a high minimum floor, not zero — smallest provisioned size plus deliberate teardown between sessions is the actual lever
 
 ## Evaluation framework
 

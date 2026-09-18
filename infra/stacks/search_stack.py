@@ -1,4 +1,4 @@
-from aws_cdk import RemovalPolicy, Stack
+from aws_cdk import CfnOutput, RemovalPolicy, Stack
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_opensearchservice as opensearch
 from constructs import Construct
@@ -39,3 +39,4 @@ class SearchStack(Stack):
                 )
             ],
         )
+        CfnOutput(self, "DomainEndpoint", value=self.domain.domain_endpoint)

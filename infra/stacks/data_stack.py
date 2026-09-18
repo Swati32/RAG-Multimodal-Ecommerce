@@ -1,4 +1,4 @@
-from aws_cdk import Duration, RemovalPolicy, Stack
+from aws_cdk import CfnOutput, Duration, RemovalPolicy, Stack
 from aws_cdk import aws_dynamodb as dynamodb
 from aws_cdk import aws_s3 as s3
 from constructs import Construct
@@ -47,3 +47,21 @@ class DataStack(Stack):
             billing=dynamodb.Billing.on_demand(),
             removal_policy=RemovalPolicy.DESTROY,
         )
+        CfnOutput(self, "ProductsTableName", value=self.products_table.table_name)
+        CfnOutput(self, "ReviewsTableName", value=self.reviews_table.table_name)
+        CfnOutput(self, "DataBucketName", value=self.data_bucket.bucket_name)
+
+        # Adjacency-list graph, replacing Neptune - see docs/designs/
+        # 05-observability-cost.md. node = "product#P1" / "category#Electronics" /
+        # "brand#Acme"; sort key = "{edge_type}#{target}". Symmetric relationships
+        # (e.g. co-purchase) are written in both directions at ingestion time, so
+        # every traversal GraphAgent needs is a single-partition query - no GSI.
+        self.graph_edges_table = dynamodb.TableV2(
+            self,
+            "GraphEdgesTable",
+            partition_key=dynamodb.Attribute(name="node", type=dynamodb.AttributeType.STRING),
+            sort_key=dynamodb.Attribute(name="edge", type=dynamodb.AttributeType.STRING),
+            billing=dynamodb.Billing.on_demand(),
+            removal_policy=RemovalPolicy.DESTROY,
+        )
+        CfnOutput(self, "GraphEdgesTableName", value=self.graph_edges_table.table_name)
