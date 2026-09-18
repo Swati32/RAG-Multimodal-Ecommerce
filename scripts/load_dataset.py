@@ -14,33 +14,21 @@ project, not a general-purpose importer:
 """
 
 import argparse
-import json
+import sys
 from collections import Counter
 from pathlib import Path
 
 import boto3
-import requests
 from huggingface_hub import hf_hub_url
 
-import sys
-
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from dataset_source import DATASET_REPO, META_FILE, REVIEWS_FILE, stream_jsonl  # noqa: E402
 from ingestion.dynamo_writer import upsert_product, upsert_review  # noqa: E402
 from ingestion.models import Product, Review  # noqa: E402
 
-DATASET_REPO = "McAuley-Lab/Amazon-Reviews-2023"
-META_FILE = "raw/meta_categories/meta_All_Beauty.jsonl"
-REVIEWS_FILE = "raw/review_categories/All_Beauty.jsonl"
 REGION = "us-east-2"
-
-
-def stream_jsonl(url: str):
-    with requests.get(url, stream=True) as response:
-        response.raise_for_status()
-        for line in response.iter_lines():
-            if line:
-                yield json.loads(line)
 
 
 def build_product(meta: dict) -> Product | None:

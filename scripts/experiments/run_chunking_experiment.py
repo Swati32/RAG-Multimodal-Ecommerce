@@ -3,34 +3,17 @@ Amazon Reviews 2023 dataset. No LLM calls - deterministic metrics only.
 Results feed docs/experiments/01-chunking-strategy.md.
 """
 
-import json
 import statistics
+import sys
+from pathlib import Path
 
-import requests
-from huggingface_hub import hf_hub_url
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from chunking_strategies import sentence_aware_split, word_count_split
+from chunking_strategies import sentence_aware_split, word_count_split  # noqa: E402
+from dataset_source import fetch_long_review_sample  # noqa: E402
 
-DATASET_REPO = "McAuley-Lab/Amazon-Reviews-2023"
-REVIEWS_FILE = "raw/review_categories/All_Beauty.jsonl"
 SAMPLE_SIZE = 40
 MIN_WORDS = 150  # only long reviews are interesting for a chunking comparison
-
-
-def fetch_long_review_sample(n: int, min_words: int) -> list[str]:
-    url = hf_hub_url(DATASET_REPO, REVIEWS_FILE, repo_type="dataset")
-    sample = []
-    with requests.get(url, stream=True) as response:
-        response.raise_for_status()
-        for line in response.iter_lines():
-            if not line:
-                continue
-            text = json.loads(line).get("text", "")
-            if len(text.split()) >= min_words:
-                sample.append(text)
-            if len(sample) >= n:
-                break
-    return sample
 
 
 def ends_cleanly(chunk: str) -> bool:
@@ -58,9 +41,9 @@ def main() -> None:
     print(f"Got {len(sample)} reviews.\n")
 
     strategies = {
-        "word_count(300w/50 overlap) - current default": lambda t: word_count_split(t, 300, 50),
+        "word_count(300w/50 overlap) - original default": lambda t: word_count_split(t, 300, 50),
         "word_count(150w/30 overlap)": lambda t: word_count_split(t, 150, 30),
-        "sentence_aware(300w budget)": lambda t: sentence_aware_split(t, 300),
+        "sentence_aware(300w budget) - current production": lambda t: sentence_aware_split(t, 300),
     }
 
     results = []
