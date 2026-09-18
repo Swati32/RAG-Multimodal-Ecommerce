@@ -38,4 +38,9 @@ At the *same* chunk density as the original default (1.1 chunks/review), sentenc
 
 This decision rests on structural proxy metrics only (boundary cleanliness, chunk density) — the cheapest of the three validation tiers described in design doc [05](../designs/05-observability-cost.md)'s Evaluation Framework, not the ground-truth one. It says nothing about actual retrieval quality.
 
-**Once OpenSearch indexing and embeddings exist** (steps 4-5 of [01](../designs/01-ingestion-pipeline.md), not yet built — see [PROGRESS.md](../PROGRESS.md)), re-run this comparison through the real comparison harness: index chunks from both `word_count` and `sentence_aware` strategies, run the same labeled query set through each, and compare precision@k and citation grounding rate. Confirm sentence-aware still wins on the metric that actually matters, or revise this decision if it doesn't.
+**Once OpenSearch indexing and embeddings exist** (steps 4-5 of [01](../designs/01-ingestion-pipeline.md), not yet built — see [PROGRESS.md](../PROGRESS.md)), re-run this comparison through the real comparison harness: index chunks from both `word_count` and `sentence_aware` strategies, run the same labeled query set through each, and compare:
+
+- **precision@k** — of the top-k results returned per query, the fraction actually relevant (`relevant items in top k / k`)
+- **citation grounding rate** — of the claims in the generated answer, the fraction actually supported by the retrieved chunks (`grounded claims / total claims`)
+
+(both defined in design doc [05](../designs/05-observability-cost.md#metrics-to-monitor)). Confirm sentence-aware still wins on the metrics that actually matter, or revise this decision if it doesn't.

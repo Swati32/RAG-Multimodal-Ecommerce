@@ -40,8 +40,8 @@ Latency isn't a constraint for this project (see Non-Functional Requirements), s
 
 **Application/quality**
 
-- Retrieval quality against a small hand-labeled eval set (precision@k)
-- Citation grounding rate: fraction of answers whose claims trace back to a retrieved chunk
+- Retrieval quality against a small hand-labeled eval set: **precision@k** — of the top-k results returned for a query, the fraction that are actually relevant (`relevant items in top k / k`)
+- **Citation grounding rate**: of the claims in a generated answer, the fraction actually supported by the retrieved chunks (`grounded claims / total claims`) — catches a model citing a real product for an unsupported claim about it, which citation *presence* (did it cite something at all) can't
 - End-to-end answer latency (p50/p95) and cost per query
 - Agent iteration count per query (a rising average suggests retrieval isn't converging)
 
@@ -59,7 +59,7 @@ Latency isn't a constraint for this project (see Non-Functional Requirements), s
 
 **What's evaluated**: retrieval quality, answer groundedness, and comparisons across candidate configurations — different LLMs for generation, different embedding models, single-agent vs multi-agent retrieval (see [02](02-retrieval-agents.md)), different chunking strategies — so architecture decisions are backed by a number, not just a design-doc argument.
 
-**Deterministic metrics** (cheap, no LLM call): precision@k / recall@k against a hand-labeled eval set (query → expected `product_id`s), citation presence, latency, cost per query.
+**Deterministic metrics** (cheap, no LLM call): precision@k (see above) and **recall@k** — of all the relevant results that exist, the fraction actually retrieved in the top-k (`relevant items retrieved / total relevant items`) — against a hand-labeled eval set (query → expected `product_id`s), plus citation presence, latency, cost per query.
 
 **LLM-as-judge** (for what exact-match can't cover, like "did the model make something up"): a separate Claude call — ideally a different/stronger model than the one being evaluated, to avoid self-grading bias — scores each (question, answer, retrieved context) triple against a rubric: groundedness (1–5), relevance (1–5), and per-claim citation accuracy (does the citation actually support the claim, not just exist).
 
