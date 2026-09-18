@@ -20,10 +20,12 @@ Implemented and unit-tested (13 tests, no AWS credentials needed — DynamoDB is
 - `src/ingestion/dynamo_writer.py` — idempotent product/review upserts
 - `src/ingestion/opensearch_documents.py` — chunk-to-document mapping with the filter fields from [02](designs/02-retrieval-agents.md#opensearch-metadata--filtering), plus the index mapping
 
-**Deployed and loaded (steps 1-2 of the pipeline, done for real)**: `RagEcommerce-Data` and `RagEcommerce-Search` are both live in AWS (account 953146692069, us-east-2) — see Infrastructure below. `scripts/load_dataset.py` streamed the Amazon Reviews 2023 "All_Beauty" category from Hugging Face (no full download) and wrote **5,000 products and 10,366 reviews** into the real DynamoDB tables; confirmed via `scan`.
+**Deployed and loaded (steps 1-2 of the pipeline, done for real, as an actual Glue job)**: `RagEcommerce-Data`, `RagEcommerce-Search`, and `RagEcommerce-Glue` are all live in AWS (account 953146692069, us-east-2) — see Infrastructure below. `rag-ecommerce-load-dataset` (a Glue Python Shell job, `infra/glue_scripts/load_dataset.py`) streams the Amazon Reviews 2023 "All_Beauty" category from Hugging Face (no full download) and writes products/reviews into the real DynamoDB tables — confirmed via a real `start-job-run` (`SUCCEEDED`, 97s) and `scan`: **5,000 products and 10,313 reviews**.
 
-Not yet implemented (steps 3-5 of the pipeline):
-- Wiring chunking + summarization into the load script (currently `load_dataset.py` only does step 2, raw records → DynamoDB — no LLM call happens there by design, see [02](designs/02-retrieval-agents.md))
+This replaced an earlier local-script version (`scripts/load_dataset.py`, since deleted) that deviated from design doc 01's Glue-job spec without flagging it — corrected per the Implementation Fidelity rule in CLAUDE.md. Getting the real Glue job working surfaced three environment gotchas now recorded in CLAUDE.md: Python Shell only supports Python 3.9 (no `X | None` syntax), `--extra-py-files` zips need manual `sys.path` handling, and Python Shell doesn't auto-inject `--JOB_NAME`.
+
+Not yet implemented (steps 3-5 of the pipeline, to be built as Glue jobs too):
+- Wiring chunking + summarization into a Glue job (the current load job only does step 2, raw records → DynamoDB — no LLM call happens there by design, see [02](designs/02-retrieval-agents.md))
 - Bedrock Batch embedding manifest builder + invocation
 - OpenSearch bulk loader script (real client calls, not just document shaping)
 - DynamoDB graph-edge builder (category hierarchy, co-purchase, brand)
@@ -40,8 +42,9 @@ Not yet implemented (steps 3-5 of the pipeline):
 
 | Stack | Resources | Status |
 | --- | --- | --- |
-| `RagEcommerce-Data` | S3 bucket, DynamoDB Products (5,000 items) + Reviews (10,366 items) + GraphEdges (empty) tables | `CREATE_COMPLETE`, loaded |
+| `RagEcommerce-Data` | S3 bucket, DynamoDB Products (5,000 items) + Reviews (10,313 items) + GraphEdges (empty) tables | `CREATE_COMPLETE`, loaded |
 | `RagEcommerce-Search` | Single-node OpenSearch domain (t3.small.search), 1 node | `CREATE_COMPLETE`, no index created yet |
+| `RagEcommerce-Glue` | `rag-ecommerce-load-dataset` Glue Python Shell job (1 DPU), its IAM role, and the S3 script/module assets it reads | `CREATE_COMPLETE`, job run `SUCCEEDED` |
 
 Not deployed: nothing else — `RagEcommerce-Graph` (Neptune) was deleted, see above.
 

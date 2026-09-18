@@ -1,22 +1,14 @@
-"""Candidate chunking strategies being compared - see docs/experiments/
-01-chunking-strategy.md. `sentence_aware_split` is the real production
-implementation (reused, not reimplemented); `word_count_split` is the
-rejected alternative, kept here only because it has no production
-counterpart to import.
+"""Rejected chunking candidate, compared in docs/experiments/
+01-chunking-strategy.md. The winning strategy is the real production
+`src/ingestion/chunking.split_text` - imported directly by
+run_chunking_experiment.py rather than re-exported here.
 """
-
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
-
-from ingestion.chunking import split_text as sentence_aware_split  # noqa: E402
 
 
 def word_count_split(text: str, max_words: int, overlap: int) -> list[str]:
     """Rejected candidate: fixed-size word windows with overlap, no regard
     for sentence boundaries. See docs/experiments/01-chunking-strategy.md
-    for why sentence_aware_split won instead."""
+    for why sentence-aware splitting won instead."""
     words = text.split()
     if len(words) <= max_words:
         return [text.strip()] if text.strip() else []

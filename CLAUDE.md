@@ -10,6 +10,9 @@
 - Bedrock Claude models need `us.<model-id>` inference-profile IDs for `invoke_model` (e.g. `us.anthropic.claude-haiku-4-5-20251001-v1:0`), not bare model IDs
 - This AWS account (953146692069) doesn't support Amazon Neptune (plan restriction, `CREATE_FAILED`) - graph storage is a DynamoDB adjacency-list table instead, see docs/designs/01-ingestion-pipeline.md
 - `aws dynamodb describe-table`'s `ItemCount` is stale (~6h refresh) - use `aws dynamodb scan --select COUNT` for a live count
+- Glue Python Shell only supports Python 2, 3, or exactly 3.9 (`^([2-3]|3[.]9)$`, verified via `aws glue create-job` validation) - no 3.10+, so no `X | None` union syntax in any module a Glue job imports; use `from __future__ import annotations` instead of rewriting types
+- Glue Python Shell's `--extra-py-files` zip lands in `/tmp/glue-python-libs-*/` with that *directory* on `sys.path`, not the zip itself - a package inside it won't import until the script manually adds the zip file (not just its folder) to `sys.path` (see infra/glue_scripts/load_dataset.py)
+- Glue Python Shell jobs don't auto-inject `--JOB_NAME` the way Spark ETL jobs do - don't request it via `getResolvedOptions` unless actually used
 
 ## Coding Guidelines
 - Clean code: direct and readable over clever; no speculative abstractions or unused flexibility

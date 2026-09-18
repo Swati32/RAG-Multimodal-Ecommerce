@@ -4,6 +4,7 @@ import os
 import aws_cdk as cdk
 
 from stacks.data_stack import DataStack
+from stacks.glue_stack import GlueStack
 from stacks.search_stack import SearchStack
 
 app = cdk.App()
@@ -13,7 +14,14 @@ env = cdk.Environment(
     region=os.environ.get("CDK_DEFAULT_REGION", "us-east-2"),
 )
 
-DataStack(app, "RagEcommerce-Data", env=env)
+data_stack = DataStack(app, "RagEcommerce-Data", env=env)
 SearchStack(app, "RagEcommerce-Search", env=env)
+GlueStack(
+    app,
+    "RagEcommerce-Glue",
+    products_table=data_stack.products_table,
+    reviews_table=data_stack.reviews_table,
+    env=env,
+)
 
 app.synth()

@@ -7,10 +7,12 @@ import statistics
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 
-from chunking_strategies import sentence_aware_split, word_count_split  # noqa: E402
+from chunking_strategies import word_count_split  # noqa: E402
 from dataset_source import fetch_long_review_sample  # noqa: E402
+from ingestion.chunking import split_text as sentence_aware_split  # noqa: E402
 
 SAMPLE_SIZE = 40
 MIN_WORDS = 150  # only long reviews are interesting for a chunking comparison
