@@ -20,16 +20,28 @@ def test_split_text_keeps_short_text_whole():
     assert split_text("a short sentence") == ["a short sentence"]
 
 
-def test_split_text_splits_long_text_with_overlap():
-    words = [f"word{i}" for i in range(700)]
-    text = " ".join(words)
+def test_split_text_packs_whole_sentences_without_breaking_them():
+    def sentence(n: int) -> str:
+        return f"Sentence{n} " + " ".join(["word"] * 99) + "."  # 100 words
 
-    pieces = split_text(text, max_words=300, overlap=50)
+    text = " ".join(sentence(i) for i in range(4))  # 4 x 100 = 400 words
 
-    assert len(pieces) == 3
-    assert pieces[0].split()[0] == "word0"
-    assert pieces[1].split()[0] == "word250"  # 300 - 50 overlap
-    assert pieces[-1].split()[-1] == "word699"
+    pieces = split_text(text, max_words=300)
+
+    assert len(pieces) == 2
+    assert pieces[0].startswith("Sentence0")
+    assert "Sentence3" not in pieces[0]
+    assert pieces[1].startswith("Sentence3")
+    assert all(p.rstrip().endswith(".") for p in pieces)  # never cut mid-sentence
+
+
+def test_split_text_keeps_an_oversized_single_sentence_whole():
+    text = " ".join(["word"] * 400) + "."  # one sentence, no internal punctuation
+
+    pieces = split_text(text, max_words=300)
+
+    assert len(pieces) == 1
+    assert len(pieces[0].split()) == 400
 
 
 def test_split_text_ignores_blank_input():

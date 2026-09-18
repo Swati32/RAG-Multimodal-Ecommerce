@@ -1,26 +1,41 @@
+import re
+
 from .models import Chunk, Product, Review
 from .summarization import ClaudeClient, summarize_review_if_long
 
 # Word count is used as a token-count proxy to avoid a tokenizer dependency;
 # it's a deliberate approximation, not exact token counting.
 MAX_CHUNK_WORDS = 300
-CHUNK_OVERLAP_WORDS = 50
+
+_SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+")
 
 
-def split_text(text: str, max_words: int = MAX_CHUNK_WORDS, overlap: int = CHUNK_OVERLAP_WORDS) -> list[str]:
-    words = text.split()
-    if len(words) <= max_words:
-        return [text.strip()] if text.strip() else []
+def split_text(text: str, max_words: int = MAX_CHUNK_WORDS) -> list[str]:
+    """Packs whole sentences into a chunk up to the word budget - never
+    splits a sentence across two chunks, so no overlap is needed either.
 
-    pieces = []
-    start = 0
-    while start < len(words):
-        end = min(start + max_words, len(words))
-        pieces.append(" ".join(words[start:end]))
-        if end == len(words):
-            break
-        start = end - overlap
-    return pieces
+    Chosen over fixed-size word windows with overlap after a direct
+    comparison: see docs/experiments/01-chunking-strategy.md. A single
+    sentence longer than max_words becomes its own oversized chunk - not
+    worth the extra complexity for this dataset.
+    """
+    sentences = [s for s in _SENTENCE_BOUNDARY.split(text.strip()) if s]
+    if not sentences:
+        return []
+
+    chunks = []
+    current: list[str] = []
+    current_words = 0
+    for sentence in sentences:
+        sentence_words = len(sentence.split())
+        if current and current_words + sentence_words > max_words:
+            chunks.append(" ".join(current))
+            current, current_words = [], 0
+        current.append(sentence)
+        current_words += sentence_words
+    if current:
+        chunks.append(" ".join(current))
+    return chunks
 
 
 def build_tag_summary(product: Product) -> str:
