@@ -97,4 +97,4 @@ The dataset's ASIN is used as `product_id` everywhere (DynamoDB key, OpenSearch 
 
 ## Status
 
-In progress — steps 1-2 (download, normalize into DynamoDB) implemented as a real Glue job and deployed; steps 3-5 (chunk, embed, index, graph edges) not yet built. See [../PROGRESS.md](../PROGRESS.md)
+In progress — steps 1-5 (download, normalize, chunk + summarize, embed, index) implemented as real Glue jobs, deployed, and run end-to-end: 5,000 products, 10,313 reviews, 20,339 chunks indexed in OpenSearch with real embeddings. Graph edges, Step Functions orchestration, and the daily refresh trigger not yet built. See [../PROGRESS.md](../PROGRESS.md)

@@ -4,6 +4,7 @@ from aws_cdk import Stack
 from aws_cdk import aws_dynamodb as dynamodb
 from aws_cdk import aws_glue as glue
 from aws_cdk import aws_iam as iam
+from aws_cdk import aws_opensearchservice as opensearch
 from aws_cdk import aws_s3 as s3
 from aws_cdk import aws_s3_assets as s3_assets
 from constructs import Construct
@@ -31,6 +32,7 @@ class GlueStack(Stack):
         data_bucket: s3.IBucket,
         products_table: dynamodb.ITableV2,
         reviews_table: dynamodb.ITableV2,
+        search_domain: opensearch.IDomain,
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -47,6 +49,7 @@ class GlueStack(Stack):
         products_table.grant_read_write_data(self.role)
         reviews_table.grant_read_write_data(self.role)
         data_bucket.grant_read_write(self.role)
+        search_domain.grant_read_write(self.role)
         self.role.add_to_policy(
             iam.PolicyStatement(
                 actions=["bedrock:InvokeModel"],
@@ -102,6 +105,23 @@ class GlueStack(Stack):
             # Rate-limited to 540 req/min (see embed_chunks.py) - ~20k chunks
             # takes ~40 minutes there, so the default 60-minute timeout
             # leaves too little margin for retries.
+            timeout_minutes=90,
+        )
+
+        self.load_opensearch_job = self._python_shell_job(
+            "LoadOpenSearchJob",
+            job_name="rag-ecommerce-load-opensearch",
+            script_path=REPO_ROOT / "infra/glue_scripts/load_opensearch.py",
+            default_arguments={
+                # opensearch-py's Glue-bundled version (1.1.0) predates
+                # AWSV4SignerAuth - same category of gotcha as boto3 above.
+                "--additional-python-modules": "boto3>=1.34,opensearch-py>=2.4",
+                "--input_bucket": data_bucket.bucket_name,
+                "--input_key": "processed/embedded_chunks.jsonl",
+                "--products_table": products_table.table_name,
+                "--opensearch_endpoint": search_domain.domain_endpoint,
+                "--index_name": "chunks",
+            },
             timeout_minutes=90,
         )
 

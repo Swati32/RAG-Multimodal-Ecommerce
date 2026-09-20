@@ -15,13 +15,14 @@ env = cdk.Environment(
 )
 
 data_stack = DataStack(app, "RagEcommerce-Data", env=env)
-SearchStack(app, "RagEcommerce-Search", env=env)
+search_stack = SearchStack(app, "RagEcommerce-Search", env=env)
 GlueStack(
     app,
     "RagEcommerce-Glue",
     data_bucket=data_stack.data_bucket,
     products_table=data_stack.products_table,
     reviews_table=data_stack.reviews_table,
+    search_domain=search_stack.domain,
     env=env,
 )
 

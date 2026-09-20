@@ -16,6 +16,8 @@
 - Glue Python Shell bundles a 2022-era boto3/botocore that predates Bedrock's service model entirely (`UnknownServiceError: Unknown service: 'bedrock-runtime'`) - force a current one via `--additional-python-modules boto3>=1.34`
 - Bedrock Batch inference (`create-model-invocation-job`) is blocked account-wide here, not per-model - confirmed via a real submission attempt with Claude: `"Your account is not authorized to perform this action. Please create a support case..."`. Needs an AWS support case to lift; use real-time calls instead (rate-limited, not just worker-count-capped - see infra/glue_scripts/embed_chunks.py)
 - Titan Text Embeddings V2 on-demand quota: 600 requests/min, 300,000 tokens/min (`aws service-quotas list-service-quotas --service-code bedrock`) - check quotas before parallelizing Bedrock calls, don't guess a safe concurrency
+- Glue Python Shell bundles opensearch-py 1.1.0, which predates `AWSV4SignerAuth` - force a current one via `--additional-python-modules opensearch-py>=2.4` (same category as the boto3 gotcha above)
+- `opensearchpy.helpers.bulk` defaults to `chunk_size=500` and `max_retries=0` - a single-node t3.small.search domain returns `TransportError(429, 'Too Many Requests')` against that with no retry; use a smaller `chunk_size` (e.g. 100) and `max_retries>0`
 
 ## Coding Guidelines
 - Clean code: direct and readable over clever; no speculative abstractions or unused flexibility

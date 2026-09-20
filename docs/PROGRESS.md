@@ -25,14 +25,15 @@ Implemented and unit-tested (16 tests, no AWS credentials needed — DynamoDB is
 
 This replaced an earlier local-script version (`scripts/load_dataset.py`, since deleted) that deviated from design doc 01's Glue-job spec without flagging it — corrected per the Implementation Fidelity rule in CLAUDE.md. Getting the real Glue job working surfaced three environment gotchas now recorded in CLAUDE.md: Python Shell only supports Python 3.9 (no `X | None` syntax), `--extra-py-files` zips need manual `sys.path` handling, and Python Shell doesn't auto-inject `--JOB_NAME`.
 
-**Step 3 done for real too**: `rag-ecommerce-chunk-and-summarize` (`infra/glue_scripts/chunk_and_summarize.py`) reads every product/review from DynamoDB, chunks them (sentence-aware, summarizing long reviews via Claude Haiku first), and writes the result to `s3://.../processed/chunks.jsonl`. Run via `start-job-run`, `SUCCEEDED` in 123s: **20,338 chunk records** (5,026 description + 5,000 tag_summary + 10,313 review). New module: `src/ingestion/dynamo_reader.py` (the inverse of `dynamo_writer` — DynamoDB item → `Product`/`Review`, plus a paginated `scan_all_items`).
+**Step 3 done for real too**: `rag-ecommerce-chunk-and-summarize` (`infra/glue_scripts/chunk_and_summarize.py`) reads every product/review from DynamoDB, chunks them (sentence-aware, summarizing long reviews via Claude Haiku first), and writes the result to `s3://.../processed/chunks.jsonl`. Run via `start-job-run`, `SUCCEEDED` in 123s: **20,339 chunk records** (5,026 description + 5,000 tag_summary + 10,313 review). New module: `src/ingestion/dynamo_reader.py` (the inverse of `dynamo_writer` — DynamoDB item → `Product`/`Review`, plus a paginated `scan_all_items`).
 
 One more environment gotcha found and recorded in CLAUDE.md: Glue Python Shell bundles a 2022-era boto3/botocore that predates Bedrock's service model (`UnknownServiceError: Unknown service: 'bedrock-runtime'`) — fixed by forcing a current `boto3` via `--additional-python-modules`.
 
-**Step 4 done for real too, but not as originally planned**: `rag-ecommerce-embed-chunks` (`infra/glue_scripts/embed_chunks.py`) embeds every chunk via Bedrock Titan Text Embeddings V2, **real-time, not Batch** — Batch inference turned out to be blocked for this whole account (confirmed against every model, not just Titan; see [01](designs/01-ingestion-pipeline.md#embedding-generation-real-time-titan-calls-not-bedrock-batch) for the deviation and why). Rate-limited to 540 req/min (90% of Titan's confirmed 600/min on-demand quota) via a thread-safe `RateLimiter`, not just a worker-count cap, since throughput depends on latency. Run via `start-job-run`, `SUCCEEDED` in 2302s (~38 min): **20,338 chunks, each with a real 1024-dim embedding vector**.
+**Step 4 done for real too, but not as originally planned**: `rag-ecommerce-embed-chunks` (`infra/glue_scripts/embed_chunks.py`) embeds every chunk via Bedrock Titan Text Embeddings V2, **real-time, not Batch** — Batch inference turned out to be blocked for this whole account (confirmed against every model, not just Titan; see [01](designs/01-ingestion-pipeline.md#embedding-generation-real-time-titan-calls-not-bedrock-batch) for the deviation and why). Rate-limited to 540 req/min (90% of Titan's confirmed 600/min on-demand quota) via a thread-safe `RateLimiter`, not just a worker-count cap, since throughput depends on latency. Run via `start-job-run`, `SUCCEEDED` in 2302s (~38 min): **20,339 chunks, each with a real 1024-dim embedding vector**.
 
-Not yet implemented (step 5 of the pipeline, to be built as a Glue job too):
-- OpenSearch bulk loader script (real client calls, not just document shaping)
+**Step 5 done for real too — the core pipeline is now end-to-end**: `rag-ecommerce-load-opensearch` (`infra/glue_scripts/load_opensearch.py`) creates the `chunks` index (via `INDEX_MAPPING`, engine `lucene`) if missing, joins every embedded chunk with its product's filter fields from DynamoDB, and bulk-loads the lot. First attempt hit `TransportError(429, 'Too Many Requests')` — the single-node t3.small.search domain's bulk queue filled up against `helpers.bulk`'s default `chunk_size=500` with no retry (`max_retries=0` by default); fixed with `chunk_size=100, max_retries=5`. Re-run `SUCCEEDED` in 191s: **20,339 documents, 0 errors**, confirmed via `client.count` and a real search query returning relevant hits with correct filter fields.
+
+Not yet implemented:
 - DynamoDB graph-edge builder (category hierarchy, co-purchase, brand)
 - Step Functions state machine wiring the stages together
 - Daily EventBridge trigger for delta refreshes
@@ -48,8 +49,8 @@ Not yet implemented (step 5 of the pipeline, to be built as a Glue job too):
 | Stack | Resources | Status |
 | --- | --- | --- |
 | `RagEcommerce-Data` | S3 bucket, DynamoDB Products (5,000 items) + Reviews (10,313 items) + GraphEdges (empty) tables | `CREATE_COMPLETE`, loaded |
-| `RagEcommerce-Search` | Single-node OpenSearch domain (t3.small.search), 1 node | `CREATE_COMPLETE`, no index created yet |
-| `RagEcommerce-Glue` | `rag-ecommerce-load-dataset` + `rag-ecommerce-chunk-and-summarize` + `rag-ecommerce-embed-chunks` Glue Python Shell jobs (1 DPU each), shared IAM role, S3 script/module assets | `CREATE_COMPLETE`, all three job runs `SUCCEEDED` |
+| `RagEcommerce-Search` | Single-node OpenSearch domain (t3.small.search), 1 node | `CREATE_COMPLETE`, `chunks` index loaded (20,339 docs) |
+| `RagEcommerce-Glue` | `rag-ecommerce-load-dataset` + `-chunk-and-summarize` + `-embed-chunks` + `-load-opensearch` Glue Python Shell jobs (1 DPU each), shared IAM role, S3 script/module assets | `CREATE_COMPLETE`, all four job runs `SUCCEEDED` |
 
 Not deployed: nothing else — `RagEcommerce-Graph` (Neptune) was deleted, see above.
 
