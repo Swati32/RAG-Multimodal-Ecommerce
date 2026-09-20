@@ -29,8 +29,9 @@ This replaced an earlier local-script version (`scripts/load_dataset.py`, since 
 
 One more environment gotcha found and recorded in CLAUDE.md: Glue Python Shell bundles a 2022-era boto3/botocore that predates Bedrock's service model (`UnknownServiceError: Unknown service: 'bedrock-runtime'`) — fixed by forcing a current `boto3` via `--additional-python-modules`.
 
-Not yet implemented (steps 4-5 of the pipeline, to be built as Glue jobs too):
-- Bedrock Batch embedding manifest builder + invocation
+**Step 4 done for real too, but not as originally planned**: `rag-ecommerce-embed-chunks` (`infra/glue_scripts/embed_chunks.py`) embeds every chunk via Bedrock Titan Text Embeddings V2, **real-time, not Batch** — Batch inference turned out to be blocked for this whole account (confirmed against every model, not just Titan; see [01](designs/01-ingestion-pipeline.md#embedding-generation-real-time-titan-calls-not-bedrock-batch) for the deviation and why). Rate-limited to 540 req/min (90% of Titan's confirmed 600/min on-demand quota) via a thread-safe `RateLimiter`, not just a worker-count cap, since throughput depends on latency. Run via `start-job-run`, `SUCCEEDED` in 2302s (~38 min): **20,338 chunks, each with a real 1024-dim embedding vector**.
+
+Not yet implemented (step 5 of the pipeline, to be built as a Glue job too):
 - OpenSearch bulk loader script (real client calls, not just document shaping)
 - DynamoDB graph-edge builder (category hierarchy, co-purchase, brand)
 - Step Functions state machine wiring the stages together
@@ -48,7 +49,7 @@ Not yet implemented (steps 4-5 of the pipeline, to be built as Glue jobs too):
 | --- | --- | --- |
 | `RagEcommerce-Data` | S3 bucket, DynamoDB Products (5,000 items) + Reviews (10,313 items) + GraphEdges (empty) tables | `CREATE_COMPLETE`, loaded |
 | `RagEcommerce-Search` | Single-node OpenSearch domain (t3.small.search), 1 node | `CREATE_COMPLETE`, no index created yet |
-| `RagEcommerce-Glue` | `rag-ecommerce-load-dataset` + `rag-ecommerce-chunk-and-summarize` Glue Python Shell jobs (1 DPU each), shared IAM role, S3 script/module assets | `CREATE_COMPLETE`, both job runs `SUCCEEDED` |
+| `RagEcommerce-Glue` | `rag-ecommerce-load-dataset` + `rag-ecommerce-chunk-and-summarize` + `rag-ecommerce-embed-chunks` Glue Python Shell jobs (1 DPU each), shared IAM role, S3 script/module assets | `CREATE_COMPLETE`, all three job runs `SUCCEEDED` |
 
 Not deployed: nothing else — `RagEcommerce-Graph` (Neptune) was deleted, see above.
 

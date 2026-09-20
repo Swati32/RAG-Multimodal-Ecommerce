@@ -14,7 +14,7 @@ flowchart TD
     A[S3 raw zone: reviews.jsonl, metadata.jsonl, images] --> B[Glue job: normalize + chunk]
     B --> C[(DynamoDB: Products, Reviews)]
     B --> D[S3 processed zone: text chunks + image refs]
-    D --> E[Bedrock Batch: embed text + images]
+    D --> E[Bedrock Titan: embed text, real-time]
     E --> F[S3: embeddings output]
     F --> G[Loader job: bulk index]
     G --> H[(OpenSearch: hybrid index)]
@@ -25,7 +25,7 @@ flowchart TD
 **Steps**:
 1. Download the dataset into the S3 raw zone
 2. Glue job normalizes raw records into product/review rows, writes them to DynamoDB, and produces chunked text ready for embedding in the S3 processed zone
-3. Bedrock Batch job embeds all text chunks and images, writing vectors back to S3
+3. Embedding job calls Bedrock Titan in real time for every text chunk, writing vectors back to S3 (Batch inference was the original plan — see below for why that changed)
 4. Loader job bulk-indexes chunks + vectors + metadata into OpenSearch
 5. Graph builder job derives edges from category hierarchy and "also bought / also viewed" fields, writes them into the DynamoDB graph-edges table
 
@@ -46,11 +46,19 @@ A Step Functions state machine sequences steps 2–5.
 
 Every chunk gets a deterministic id (`{product_id}#{chunk_index}`) carrying `product_id` as metadata, so any retrieved chunk traces back to its source product (and review id, for reviews).
 
-### Embedding generation: Bedrock Batch for bulk, real-time for query
+### Embedding generation: real-time Titan calls, not Bedrock Batch
 
-Bulk ingestion embeds hundreds to thousands of items with no latency requirement — Bedrock Batch is roughly half the cost of on-demand invocation and built for exactly this (submit a manifest in S3, get vectors back in S3, no throttling from a tight real-time loop). Query-time embedding of a single user query needs milliseconds, so it goes through the real-time endpoint instead — batch jobs are minutes-to-hours turnaround, unsuitable for an interactive request.
+**Deviation from the original design**, forced by the account, not chosen: the original plan was Bedrock Batch for bulk ingestion (roughly half the cost of on-demand, built for exactly this — submit a manifest in S3, get vectors back in S3, no throttling from a tight real-time loop) and real-time only for query-time embedding.
 
-If the embedding model changes, re-run the batch job over the full corpus rather than patching individual vectors — this avoids two incompatible embedding spaces coexisting in the same index.
+Tested directly against this AWS account (953146692069) and confirmed blocked two ways:
+- `aws bedrock list-foundation-models` shows `BATCH` in `inferenceTypesSupported` for **zero** models, in both us-east-1 and us-east-2 — not a Titan-specific gap
+- An actual `create-model-invocation-job` submission (with Claude, to rule out an embedding-model-specific issue) was rejected outright: *"Your account is not authorized to perform this action. Please create a support case..."*
+
+This is an account-level authorization gate for the Batch inference feature itself, separate from ordinary model access, and needs an AWS support case (business justification) to lift — not something fixable in code or IaC.
+
+**Resolved: real-time Bedrock Titan calls for bulk ingestion too**, not just query-time. At ~20,000 chunks this is a `ThreadPoolExecutor`-parallelized loop (see `infra/glue_scripts/embed_chunks.py`), not a single-threaded one — sequential calls at network latency would risk the Glue job's timeout. The cost difference versus Batch's ~50% discount is negligible at this dataset's scale (pennies either way against the $100/month cap), so this isn't a real regression, just a different mechanism than planned. If the support case is ever approved, this is a small, isolated change to swap back.
+
+If the embedding model changes, re-run this job over the full corpus rather than patching individual vectors — this avoids two incompatible embedding spaces coexisting in the same index.
 
 ### Graph storage: DynamoDB, not Neptune
 
@@ -71,7 +79,7 @@ Rather than one bulk load, the dataset is split so the pipeline runs as a recurr
 
 Each delta run exercises the pipeline as *updates*, not just inserts:
 - DynamoDB: upsert by `product_id`
-- OpenSearch: document upsert by chunk id — only the delta's chunks go through Bedrock Batch re-embedding, keeping re-embedding cost proportional to what changed
+- OpenSearch: document upsert by chunk id — only the delta's chunks go through re-embedding, keeping cost proportional to what changed
 - DynamoDB graph edges: conditional writes (put only if the exact edge doesn't already exist), so replaying a delta batch never duplicates edges
 
 **Trigger**: an EventBridge scheduled rule running once daily, invoking the Step Functions execution for the next delta partition — a live cadence rather than a manual one, so the system continuously demonstrates ingesting updates without someone kicking off each run.

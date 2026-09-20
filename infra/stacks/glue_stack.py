@@ -87,7 +87,33 @@ class GlueStack(Stack):
             },
         )
 
-    def _python_shell_job(self, construct_id: str, *, job_name: str, script_path: Path, default_arguments: dict) -> glue.CfnJob:
+        self.embed_chunks_job = self._python_shell_job(
+            "EmbedChunksJob",
+            job_name="rag-ecommerce-embed-chunks",
+            script_path=REPO_ROOT / "infra/glue_scripts/embed_chunks.py",
+            default_arguments={
+                "--additional-python-modules": "boto3>=1.34",
+                "--input_bucket": data_bucket.bucket_name,
+                "--input_key": "processed/chunks.jsonl",
+                "--output_bucket": data_bucket.bucket_name,
+                "--output_key": "processed/embedded_chunks.jsonl",
+                "--embedding_model_id": "amazon.titan-embed-text-v2:0",
+            },
+            # Rate-limited to 540 req/min (see embed_chunks.py) - ~20k chunks
+            # takes ~40 minutes there, so the default 60-minute timeout
+            # leaves too little margin for retries.
+            timeout_minutes=90,
+        )
+
+    def _python_shell_job(
+        self,
+        construct_id: str,
+        *,
+        job_name: str,
+        script_path: Path,
+        default_arguments: dict,
+        timeout_minutes: int = 60,
+    ) -> glue.CfnJob:
         script_asset = s3_assets.Asset(self, f"{construct_id}Script", path=str(script_path))
         script_asset.grant_read(self.role)
 
@@ -104,5 +130,5 @@ class GlueStack(Stack):
             default_arguments={"--extra-py-files": self._modules_asset.s3_object_url, **default_arguments},
             max_capacity=1,
             glue_version="3.0",
-            timeout=60,
+            timeout=timeout_minutes,
         )

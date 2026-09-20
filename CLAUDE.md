@@ -13,6 +13,9 @@
 - Glue Python Shell only supports Python 2, 3, or exactly 3.9 (`^([2-3]|3[.]9)$`, verified via `aws glue create-job` validation) - no 3.10+, so no `X | None` union syntax in any module a Glue job imports; use `from __future__ import annotations` instead of rewriting types
 - Glue Python Shell's `--extra-py-files` zip lands in `/tmp/glue-python-libs-*/` with that *directory* on `sys.path`, not the zip itself - a package inside it won't import until the script manually adds the zip file (not just its folder) to `sys.path` (see infra/glue_scripts/load_dataset.py)
 - Glue Python Shell jobs don't auto-inject `--JOB_NAME` the way Spark ETL jobs do - don't request it via `getResolvedOptions` unless actually used
+- Glue Python Shell bundles a 2022-era boto3/botocore that predates Bedrock's service model entirely (`UnknownServiceError: Unknown service: 'bedrock-runtime'`) - force a current one via `--additional-python-modules boto3>=1.34`
+- Bedrock Batch inference (`create-model-invocation-job`) is blocked account-wide here, not per-model - confirmed via a real submission attempt with Claude: `"Your account is not authorized to perform this action. Please create a support case..."`. Needs an AWS support case to lift; use real-time calls instead (rate-limited, not just worker-count-capped - see infra/glue_scripts/embed_chunks.py)
+- Titan Text Embeddings V2 on-demand quota: 600 requests/min, 300,000 tokens/min (`aws service-quotas list-service-quotas --service-code bedrock`) - check quotas before parallelizing Bedrock calls, don't guess a safe concurrency
 
 ## Coding Guidelines
 - Clean code: direct and readable over clever; no speculative abstractions or unused flexibility
