@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from typing import Callable
 
+from botocore.exceptions import ConnectTimeoutError, ReadTimeoutError
+
 Tool = dict
 RunTool = Callable[[str, dict], dict]
 
@@ -50,12 +52,18 @@ def run_tool_loop(
     results: list[dict] = []
 
     for _ in range(max_turns):
-        response = bedrock.converse(
-            modelId=model_id,
-            system=[{"text": instruction}],
-            messages=messages,
-            toolConfig={"tools": tools},
-        )
+        try:
+            response = bedrock.converse(
+                modelId=model_id,
+                system=[{"text": instruction}],
+                messages=messages,
+                toolConfig={"tools": tools},
+            )
+        except (ReadTimeoutError, ConnectTimeoutError):
+            # A slow Converse call shouldn't hang the whole request - fall
+            # back to whatever results have already been gathered from
+            # completed tool calls, per design doc 04's "Retry/fallback".
+            return {"results": results, "message": "A step timed out before finishing; returning partial results."}
         output_message = response["output"]["message"]
         messages.append(output_message)
 

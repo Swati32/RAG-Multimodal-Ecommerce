@@ -2,6 +2,7 @@ import json
 
 import boto3
 import pytest
+from botocore.exceptions import ReadTimeoutError
 from moto import mock_aws
 
 import agents.router_runtime as runtime
@@ -31,13 +32,16 @@ class _StubStreamingBody:
 
 
 class StubAgentCoreClient:
-    def __init__(self, results_by_arn: dict[str, list[dict]]):
+    def __init__(self, results_by_arn: dict[str, list[dict]], timeout_arns: set[str] = frozenset()):
         self._results_by_arn = results_by_arn
+        self._timeout_arns = timeout_arns
         self.invoked_arns = []
 
     def invoke_agent_runtime(self, **kwargs):
         arn = kwargs["agentRuntimeArn"]
         self.invoked_arns.append(arn)
+        if arn in self._timeout_arns:
+            raise ReadTimeoutError(endpoint_url="https://bedrock-agentcore.us-east-2.amazonaws.com")
         return {"response": _StubStreamingBody({"results": self._results_by_arn.get(arn, []), "message": "ok"})}
 
 
@@ -136,6 +140,32 @@ def test_invoke_never_dispatches_image_agent_without_an_uploaded_image(arn_env, 
     assert agentcore.invoked_arns == []
     assert response["citations"] == []
     assert "couldn't determine" in response["answer"]
+
+
+def test_invoke_degrades_gracefully_when_one_specialist_times_out(arn_env, products_table, monkeypatch):
+    """Design doc 04's "Retry/fallback": one hung specialist shouldn't fail
+    the whole request - the router should still answer from whichever
+    specialists did respond."""
+    bedrock = StubBedrockClient(
+        [
+            '{"search_agent": true, "graph_agent": true, "lookup_agent": false, "image_agent": false}',  # routing
+            '{"ranked_product_ids": ["P2"]}',  # consolidation
+            '{"answer": "The Acme headphones have great sound.", "citations": [{"product_id": "P2", "snippet": "great sound"}]}',  # generation
+            '{"verdicts": [{"product_id": "P2", "grounded": true}]}',  # verification
+        ]
+    )
+    agentcore = StubAgentCoreClient(
+        {"arn:search": [{"product_id": "P2", "text": "great sound"}]},
+        timeout_arns={"arn:graph"},
+    )
+    monkeypatch.setattr(runtime, "_bedrock", bedrock)
+    monkeypatch.setattr(runtime, "_agentcore", agentcore)
+
+    response = runtime.invoke({"prompt": "find a gentle moisturizer"})
+
+    assert set(agentcore.invoked_arns) == {"arn:search", "arn:graph"}
+    assert response["answer"] == "The Acme headphones have great sound."
+    assert response["citations"][0]["product_id"] == "P2"
 
 
 def test_invoke_skips_consolidation_and_generation_when_dispatch_found_nothing(arn_env, monkeypatch):

@@ -7,7 +7,7 @@ Tracks implementation status per workflow. Update this file as each workflow mov
 | Ingestion & Refresh Pipeline | [01](designs/01-ingestion-pipeline.md) | [src/ingestion](../src/ingestion) | Complete |
 | Retrieval Agents & Query Orchestration | [02](designs/02-retrieval-agents.md) | [src/agents](../src/agents) | Core pipeline complete |
 | Image Upload & Multimodal Query | [03](designs/03-image-upload.md) | — | Not started |
-| Inference Serving | [04](designs/04-inference-serving.md) | — | Not started |
+| Inference Serving | [04](designs/04-inference-serving.md) | [src/agents/bedrock_client.py](../src/agents/bedrock_client.py) | Retry/timeout complete, streaming not started |
 | Observability & Cost Controls | [05](designs/05-observability-cost.md) | — | Not started |
 | Frontend Hosting | [06](designs/06-frontend-hosting.md) | — | Not started |
 
@@ -108,6 +108,12 @@ Verified against the real deployed pipeline: the same multi-specialist question 
 
 Workflow 02 (Retrieval Agents & Query Orchestration) is now functionally complete — real routing, real parallel multi-agent dispatch, real LLM-judged consolidation, real deterministic dedup, real grounded generation, real citation verification, all deployed and verified against live AWS, not mocks.
 
+## Inference Serving — what's done
+
+**Retry/timeout/graceful-degradation done for real, deployed and verified** — see [04](designs/04-inference-serving.md#implementation-notes) for the full config reasoning. `src/agents/bedrock_client.py` centralizes client construction for every agent: `Config(retries={"mode": "standard", "max_attempts": 3})` (boto3's built-in exponential backoff + jitter, no hand-rolled retry loop needed) plus a per-call `read_timeout` (10s for Converse calls, 20s for the router's specialist-dispatch calls, since one dispatch is a whole multi-turn specialist run, not one model call). On a timeout, both `tool_loop.py` (a specialist's own loop) and `router_runtime.py` (the router's dispatch to a specialist) degrade gracefully — return/proceed with whatever was already collected, rather than failing the whole request. All five `*_agent_runtime.py`/`router_runtime.py` modules switched from ad hoc `boto3.client(...)` calls to the shared factories. Unit-tested against the real `botocore.exceptions.ReadTimeoutError` type (forcing a genuine live Bedrock timeout isn't practical); redeployed `RagEcommerce-Agents` and re-ran a real router invocation end-to-end to confirm the client config change caused no regression.
+
+Streaming final-answer generation is not yet built — deferred because it needs an actual answer-format decision (the generator currently returns one JSON blob per call, which doesn't stream cleanly token-by-token) rather than a silent change to the already-shipped Answer Format from [02](designs/02-retrieval-agents.md#answer-format). See [04](designs/04-inference-serving.md#implementation-notes) for what's been scoped out. Tracked as a follow-up below.
+
 ## Infrastructure (`infra/`)
 
 **Resolved: AWS CDK (Python)** — one language across app code and infra, rather than adding Terraform/HCL as a second one.
@@ -136,6 +142,7 @@ Every resource uses `RemovalPolicy.DESTROY` so `cdk destroy` fully tears the sta
 
 - **Citation grounding rate**: [Experiment 03](experiments/03-chunking-retrieval-validation.md) and [Experiment 04](experiments/04-indexing-strategy.md) validated chunking and hybrid combination against real precision@k / hit-rate@k, but grounding rate needs an actual answer-generation step with citations — revisit once workflow [02](designs/02-retrieval-agents.md)'s retrieval agents exist
 - **Chunk granularity ("small-to-big")** ([02](designs/02-retrieval-agents.md#indexing-strategy)): still an open, reasoned-but-unvalidated decision — like grounding rate, needs the generator/verifier step to measure meaningfully, not just retrieval-only metrics
+- **Streaming final-answer generation** ([04](designs/04-inference-serving.md#implementation-notes)): needs an answer-format decision (free-text streaming with inline citation markers + a fast non-streaming citation-resolution follow-up is the leading option) before implementing — deliberately not done as a silent change to the shipped Answer Format from [02](designs/02-retrieval-agents.md#answer-format)
 
 ## Suggested build order
 

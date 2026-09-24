@@ -15,6 +15,7 @@ import os
 import boto3
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
+from agents.bedrock_client import bedrock_runtime_client
 from agents.lookup_tools import get_product_response, get_review_response
 from agents.tool_loop import run_tool_loop
 
@@ -61,7 +62,7 @@ TOOLS = [
 
 app = BedrockAgentCoreApp()
 _dynamodb = boto3.resource("dynamodb", region_name=REGION)
-_bedrock = boto3.client("bedrock-runtime", region_name=REGION)
+_bedrock = bedrock_runtime_client(REGION)
 
 
 def run_tool(name: str, tool_input: dict) -> dict:

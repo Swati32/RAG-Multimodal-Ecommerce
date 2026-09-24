@@ -23,6 +23,7 @@ import boto3
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from opensearchpy import AWSV4SignerAuth, OpenSearch, RequestsHttpConnection
 
+from agents.bedrock_client import bedrock_runtime_client
 from agents.image_tools import DEFAULT_K, search_similar_images
 from agents.tool_loop import run_tool_loop
 
@@ -66,7 +67,7 @@ TOOLS = [
 ]
 
 app = BedrockAgentCoreApp()
-_bedrock = boto3.client("bedrock-runtime", region_name=REGION)
+_bedrock = bedrock_runtime_client(REGION)
 _opensearch: OpenSearch | None = None
 
 

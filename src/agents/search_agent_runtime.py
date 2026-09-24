@@ -13,6 +13,7 @@ import boto3
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from opensearchpy import AWSV4SignerAuth, OpenSearch, RequestsHttpConnection
 
+from agents.bedrock_client import bedrock_runtime_client
 from agents.search_tools import DEFAULT_K, ensure_search_pipeline, search_products
 from agents.tool_loop import run_tool_loop
 
@@ -59,7 +60,7 @@ TOOLS = [
 ]
 
 app = BedrockAgentCoreApp()
-_bedrock = boto3.client("bedrock-runtime", region_name=REGION)
+_bedrock = bedrock_runtime_client(REGION)
 
 
 def _opensearch_client() -> OpenSearch:

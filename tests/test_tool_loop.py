@@ -1,3 +1,5 @@
+from botocore.exceptions import ReadTimeoutError
+
 from agents.tool_loop import run_tool_loop
 
 
@@ -8,7 +10,10 @@ class StubBedrockClient:
 
     def converse(self, **kwargs):
         self.sent_messages_by_call.append(list(kwargs["messages"]))  # snapshot - messages list mutates in place
-        return self._responses.pop(0)
+        response = self._responses.pop(0)
+        if response is TimeoutError:
+            raise ReadTimeoutError(endpoint_url="https://bedrock-runtime.us-east-2.amazonaws.com")
+        return response
 
 
 def _tool_use_response(tool_use_id: str, name: str, input_: dict) -> dict:
@@ -54,3 +59,17 @@ def test_flattened_results_are_unaffected_by_wire_wrapping():
     response = run_tool_loop(bedrock, "model", "instruction", [], run_tool, "find things", max_turns=4)
 
     assert response["results"] == [{"product_id": "P1"}, {"product_id": "P2"}]
+
+
+def test_timeout_mid_loop_returns_partial_results_instead_of_raising():
+    """Design doc 04's "Retry/fallback": on timeout, the agent proceeds
+    with whatever context it already has rather than failing the request
+    outright - a slow second Converse call shouldn't lose the first tool
+    call's results."""
+    bedrock = StubBedrockClient([_tool_use_response("t1", "search", {}), TimeoutError])
+    run_tool = lambda name, input_: [{"product_id": "P1"}]  # noqa: E731
+
+    response = run_tool_loop(bedrock, "model", "instruction", [], run_tool, "find things", max_turns=4)
+
+    assert response["results"] == [{"product_id": "P1"}]
+    assert "timed out" in response["message"]

@@ -28,8 +28,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 import boto3
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
+from botocore.exceptions import ConnectTimeoutError, ReadTimeoutError
 
 from agents.answer_generation import generate_answer, resolve_citations, verify_citations
+from agents.bedrock_client import agentcore_client, bedrock_runtime_client
 from agents.router_tools import converse_text, dedupe_and_rank, dispatch_specialist, parse_json_response
 
 REGION = "us-east-2"
@@ -62,8 +64,8 @@ CONSOLIDATION_INSTRUCTION = """You are consolidating results from multiple retri
 Respond with ONLY this JSON, no other text: {"ranked_product_ids": [<product_id strings, most relevant first>]}. Include a product_id at most once, and omit any candidate that isn't actually relevant to the question - do not pad the list to include everything."""
 
 app = BedrockAgentCoreApp()
-_bedrock = boto3.client("bedrock-runtime", region_name=REGION)
-_agentcore = boto3.client("bedrock-agentcore", region_name=REGION)
+_bedrock = bedrock_runtime_client(REGION)
+_agentcore = agentcore_client(REGION)
 _dynamodb = boto3.resource("dynamodb", region_name=REGION)
 
 
@@ -107,8 +109,14 @@ def invoke(payload: dict) -> dict:
                 )
                 for name in to_dispatch
             }
-            for future in futures.values():
-                candidates.extend(future.result())
+            for name, future in futures.items():
+                try:
+                    candidates.extend(future.result())
+                except (ReadTimeoutError, ConnectTimeoutError):
+                    # One specialist hanging shouldn't fail the whole
+                    # request - proceed with whatever the others returned,
+                    # per design doc 04's "Retry/fallback".
+                    app.logger.warning("Specialist %s timed out, proceeding without it", name)
 
     if not candidates:
         answer = (
