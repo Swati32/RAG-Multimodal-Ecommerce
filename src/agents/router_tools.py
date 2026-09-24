@@ -19,11 +19,22 @@ def parse_json_response(raw: str) -> dict:
     return json.loads(fenced.group(1) if fenced else raw)
 
 
-def converse_text(bedrock, model_id: str, instruction: str, prompt: str) -> str:
-    """One-shot Converse call, text only - the shared shape behind every
+def converse_text(bedrock, model_id: str, instruction: str, prompt: str, image_bytes: bytes | None = None, image_format: str = "jpeg") -> str:
+    """One-shot Converse call, text output - the shared shape behind every
     JSON-output Claude call in the router/generator/verifier (routing
-    decision, consolidation, answer generation, citation verification)."""
-    response = bedrock.converse(modelId=model_id, system=[{"text": instruction}], messages=[{"role": "user", "content": [{"text": prompt}]}])
+    decision, consolidation, answer generation, citation verification).
+
+    `image_bytes`, when given, attaches the query image alongside the text
+    prompt (same content-block shape ImageAgent uses) - needed by
+    consolidation for an image-driven query: without the actual image,
+    Claude can't judge relevance of ImageAgent's candidates and declines
+    with a prose refusal instead of the requested JSON (a real
+    JSONDecodeError from exactly this, caught live - see docs/designs/
+    03-image-upload.md). `image_format` must match the actual upload - the
+    allowlist in src/api/presign_upload.py accepts jpg/png/webp, not jpeg
+    only, so a hardcoded default here would mislabel a real PNG/WEBP."""
+    content = [{"image": {"format": image_format, "source": {"bytes": image_bytes}}}, {"text": prompt}] if image_bytes else [{"text": prompt}]
+    response = bedrock.converse(modelId=model_id, system=[{"text": instruction}], messages=[{"role": "user", "content": content}])
     return next(block["text"] for block in response["output"]["message"]["content"] if "text" in block)
 
 

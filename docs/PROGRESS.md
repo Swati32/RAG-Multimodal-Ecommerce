@@ -6,7 +6,7 @@ Tracks implementation status per workflow. Update this file as each workflow mov
 | --- | --- | --- | --- |
 | Ingestion & Refresh Pipeline | [01](designs/01-ingestion-pipeline.md) | [src/ingestion](../src/ingestion) | Complete |
 | Retrieval Agents & Query Orchestration | [02](designs/02-retrieval-agents.md) | [src/agents](../src/agents) | Core pipeline complete |
-| Image Upload & Multimodal Query | [03](designs/03-image-upload.md) | — | Not started |
+| Image Upload & Multimodal Query | [03](designs/03-image-upload.md) | [src/api](../src/api), [infra/stacks/upload_stack.py](../infra/stacks/upload_stack.py) | Complete |
 | Inference Serving | [04](designs/04-inference-serving.md) | [src/agents/bedrock_client.py](../src/agents/bedrock_client.py) | Complete |
 | Observability & Cost Controls | [05](designs/05-observability-cost.md) | — | Not started |
 | Frontend Hosting | [06](designs/06-frontend-hosting.md) | — | Not started |
@@ -114,6 +114,14 @@ Workflow 02 (Retrieval Agents & Query Orchestration) is now functionally complet
 
 **Streaming final-answer generation done for real, deployed and verified too — workflow 04 is now fully complete.** Replaced the JSON-blob answer format with plain-text streaming + inline `[[product_id]]` citation markers (a deliberate, flagged deviation from design doc 02's original Answer Format — JSON doesn't stream usefully). `stream_answer` (Bedrock `converse_stream`) yields text deltas; `extract_citations` parses markers out of the reassembled full text once streaming finishes (verified live that a marker can split across chunk boundaries — `[[B07968N5GC]]` arrived as two separate chunks in a real response — and reassembly handles it correctly). The router's AgentCore entrypoint is now a generator, auto-streamed by the SDK as real SSE. One new real deploy-time gotcha: `converse_stream` needs `bedrock:InvokeModelWithResponseStream`, a separate IAM action from `bedrock:InvokeModel` — a real `AccessDeniedException` confirmed it wasn't implied, fixed in `agents_stack.py`. Verified live: `invoke-agent-runtime` against the deployed router returned `contentType: text/event-stream`, dozens of real `answer_chunk` SSE events, and one correctly-deduplicated `final` event with clean per-product citation snippets. See [04](designs/04-inference-serving.md#implementation-notes) for the full reasoning.
 
+## Image Upload & Multimodal Query — what's done
+
+**Done for real, deployed and verified live — workflow 03 is now complete.** `RagEcommerce-Upload` (two Lambdas sharing one Docker image, behind an HTTP API) matches the design exactly: `POST /upload-url` (`src/api/presign_upload.py`) returns a real S3 presigned POST scoped to `query-images/`, with the file-type allowlist and 5MB size cap enforced as real S3 policy conditions, not just app-level checks; `POST /query` (`src/api/submit_query.py`) fetches an uploaded image from S3 and invokes the router, collapsing its SSE stream into one JSON answer.
+
+**Constraints verified live, not just unit-tested**: an unsupported content type gets a real 400 before ever asking S3; a real 6MB JPEG gets a real S3 `EntityTooLarge` 400 on the upload itself (`ProposedSize: 5246450, MaxSizeAllowed: 5242880`); a real product's own image (both JPEG and a real PNG, converted with macOS `sips`) uploads successfully and round-trips through embed → k-NN self-match → grounded answer.
+
+**Three real bugs found and fixed via live end-to-end testing** (none caught by unit tests alone): (1) `agentcore_client`'s 20s default timeout was scoped for the router calling a specialist, not for this API's Lambda calling the *router itself* — its full pipeline genuinely runs longer, a real image query hit "stream ended without a final event" until the client got its own longer, parameterized timeout; (2) consolidation and generation were text-only even for an image-driven query, so Claude couldn't judge ImageAgent's candidates against a reference image it couldn't see — consolidation crashed with a real `JSONDecodeError` on a prose refusal, and generation independently refused once that was fixed too, both fixed by actually attaching the image to those Converse calls; (3) every downstream image content block and Cohere's embed request hardcoded `"jpeg"` regardless of the real upload, a silent mislabeling risk for the PNG/WEBP the allowlist itself promises support for — fixed by threading the real format from S3's `ContentType` end-to-end. See [03](designs/03-image-upload.md#implementation-notes) for the full story.
+
 ## Infrastructure (`infra/`)
 
 **Resolved: AWS CDK (Python)** — one language across app code and infra, rather than adding Terraform/HCL as a second one.
@@ -129,6 +137,7 @@ Workflow 02 (Retrieval Agents & Query Orchestration) is now functionally complet
 | `RagEcommerce-Glue` | `rag-ecommerce-load-dataset` + `-load-delta-reviews` + `-chunk-and-summarize` + `-embed-chunks` + `-load-opensearch` + `-build-graph-edges` + `-embed-images` + `-load-images` Glue Python Shell jobs (1 DPU each), shared IAM role, S3 script/module assets | `CREATE_COMPLETE`, all eight job runs `SUCCEEDED` |
 | `RagEcommerce-Refresh` | Step Functions state machine (`rag-ecommerce-daily-refresh`) + EventBridge daily schedule | `CREATE_COMPLETE`, first (automatic) execution `SUCCEEDED` in ~6 min |
 | `RagEcommerce-Agents` | LookupAgent + SearchAgent + GraphAgent + ImageAgent + Router (Bedrock AgentCore Runtime, ARM64 containers, CDK-built/pushed images) | `CREATE_COMPLETE`, all five runtimes `READY`, each verified via real invocations |
+| `RagEcommerce-Upload` | HTTP API + 2 Lambdas (presign-upload, submit-query; shared ARM64 Docker image, `query-images/` S3 prefix) | `CREATE_COMPLETE`, both routes verified live (real upload, real size/type rejection, real self-match query) |
 
 Not deployed: nothing else — `RagEcommerce-Graph` (Neptune) was deleted, see above.
 

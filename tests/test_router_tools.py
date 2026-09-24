@@ -2,7 +2,41 @@ import json
 
 import pytest
 
-from agents.router_tools import dedupe_and_rank, dispatch_specialist, parse_json_response
+from agents.router_tools import converse_text, dedupe_and_rank, dispatch_specialist, parse_json_response
+
+
+class StubBedrockClient:
+    def __init__(self, text: str):
+        self._text = text
+        self.calls = []
+
+    def converse(self, **kwargs):
+        self.calls.append(kwargs)
+        return {"output": {"message": {"content": [{"text": self._text}]}}}
+
+
+def test_converse_text_is_text_only_without_an_image():
+    bedrock = StubBedrockClient("ok")
+
+    converse_text(bedrock, "model", "instruction", "a prompt")
+
+    assert bedrock.calls[0]["messages"][0]["content"] == [{"text": "a prompt"}]
+
+
+def test_converse_text_attaches_an_image_content_block_when_given():
+    """A real bug this guards against: the router's consolidation step
+    used to be text-only even for an image-driven query, so Claude had no
+    way to actually judge the candidates against the reference image and
+    declined with a prose refusal instead of the requested JSON (a real
+    JSONDecodeError from exactly this - see docs/designs/
+    03-image-upload.md)."""
+    bedrock = StubBedrockClient("ok")
+
+    converse_text(bedrock, "model", "instruction", "a prompt", image_bytes=b"fake-jpeg-bytes")
+
+    content = bedrock.calls[0]["messages"][0]["content"]
+    assert content[0] == {"image": {"format": "jpeg", "source": {"bytes": b"fake-jpeg-bytes"}}}
+    assert content[1] == {"text": "a prompt"}
 
 
 def test_parse_json_response_handles_plain_json():

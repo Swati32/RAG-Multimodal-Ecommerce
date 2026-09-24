@@ -12,6 +12,7 @@ class StubBedrockClient:
         self._texts = list(texts or [])
         self._stream_chunks = list(stream_chunks or [])
         self.calls = 0
+        self.stream_calls: list[dict] = []
 
     def converse(self, **kwargs):
         self.calls += 1
@@ -19,6 +20,7 @@ class StubBedrockClient:
 
     def converse_stream(self, **kwargs):
         self.calls += 1
+        self.stream_calls.append(kwargs)
         return {"stream": [{"contentBlockDelta": {"delta": {"text": chunk}}} for chunk in self._stream_chunks]}
 
 
@@ -28,6 +30,19 @@ def test_stream_answer_yields_text_deltas_as_they_arrive():
     chunks = list(stream_answer(bedrock, "model", "How's the battery?", [{"product_id": "P1", "text": "Battery lasts all day."}]))
 
     assert chunks == ["It has ", "great battery life. [[P1]]"]
+
+
+def test_stream_answer_attaches_an_image_when_given():
+    """Real bug, caught live: generation was text-only even for an
+    image-driven query, so Claude refused to answer at all ("I'm unable to
+    see or process images directly") despite already having the matched
+    records to write from - see docs/designs/03-image-upload.md."""
+    bedrock = StubBedrockClient(stream_chunks=["Similar item. [[P1]]"])
+
+    list(stream_answer(bedrock, "model", "find similar products", [{"product_id": "P1"}], image_bytes=b"fake-jpeg-bytes"))
+
+    content = bedrock.stream_calls[0]["messages"][0]["content"]
+    assert content[0] == {"image": {"format": "jpeg", "source": {"bytes": b"fake-jpeg-bytes"}}}
 
 
 def test_extract_citations_parses_marker_and_strips_it_from_the_answer():

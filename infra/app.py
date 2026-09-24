@@ -8,6 +8,7 @@ from stacks.data_stack import DataStack
 from stacks.glue_stack import GlueStack
 from stacks.refresh_stack import RefreshStack
 from stacks.search_stack import SearchStack
+from stacks.upload_stack import UploadStack
 
 app = cdk.App()
 
@@ -30,7 +31,7 @@ glue_stack = GlueStack(
 )
 refresh_stack = RefreshStack(app, "RagEcommerce-Refresh", env=env)
 refresh_stack.add_dependency(glue_stack)
-AgentsStack(
+agents_stack = AgentsStack(
     app,
     "RagEcommerce-Agents",
     products_table=data_stack.products_table,
@@ -39,5 +40,13 @@ AgentsStack(
     search_domain=search_stack.domain,
     env=env,
 )
+upload_stack = UploadStack(
+    app,
+    "RagEcommerce-Upload",
+    data_bucket=data_stack.data_bucket,
+    router_runtime=agents_stack.router,
+    env=env,
+)
+upload_stack.add_dependency(agents_stack)
 
 app.synth()

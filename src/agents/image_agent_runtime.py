@@ -86,11 +86,15 @@ def get_opensearch_client() -> OpenSearch:
     return _opensearch
 
 
-def embed_image(runtime, image_bytes: bytes) -> list[float]:
+def embed_image(runtime, image_bytes: bytes, image_format: str = "jpeg") -> list[float]:
+    """`image_format` must match the actual upload (jpeg/png/webp) - a
+    hardcoded "jpeg" mime type here would silently mislabel a real PNG/WEBP
+    upload to Cohere (see docs/designs/03-image-upload.md; the upload
+    allowlist in src/api/presign_upload.py permits all three)."""
     b64 = base64.b64encode(image_bytes).decode("utf-8")
     body = json.dumps(
         {
-            "images": [f"data:image/jpeg;base64,{b64}"],
+            "images": [f"data:image/{image_format};base64,{b64}"],
             "input_type": "image",
             "embedding_types": ["float"],
             "output_dimension": 1024,
@@ -103,7 +107,8 @@ def embed_image(runtime, image_bytes: bytes) -> list[float]:
 @app.entrypoint
 def invoke(payload: dict) -> dict:
     image_bytes = base64.b64decode(payload["image_base64"])
-    embedding = embed_image(_bedrock, image_bytes)
+    image_format = payload.get("image_format", "jpeg")
+    embedding = embed_image(_bedrock, image_bytes, image_format)
     prompt_text = payload.get("prompt", "Find products that look like this.")
 
     def run_tool(name: str, tool_input: dict) -> list[dict] | dict:
@@ -123,7 +128,7 @@ def invoke(payload: dict) -> dict:
         )
 
     user_content = [
-        {"image": {"format": "jpeg", "source": {"bytes": image_bytes}}},
+        {"image": {"format": image_format, "source": {"bytes": image_bytes}}},
         {"text": prompt_text},
     ]
     return run_tool_loop(_bedrock, MODEL_ID, INSTRUCTION, TOOLS, run_tool, user_content, MAX_TURNS)

@@ -22,6 +22,7 @@ agentic, it needs good context."
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -79,11 +80,11 @@ def decide_dispatch(bedrock, question: str, has_image: bool) -> dict:
     return decision
 
 
-def run_consolidation(bedrock, question: str, candidates: list[dict]) -> list[str]:
+def run_consolidation(bedrock, question: str, candidates: list[dict], image_bytes: bytes | None = None, image_format: str = "jpeg") -> list[str]:
     prompt = f"Question: {question}\n\nCandidates:\n{json.dumps(candidates, indent=2)}"
-    return parse_json_response(converse_text(bedrock, ROUTING_MODEL_ID, CONSOLIDATION_INSTRUCTION, prompt)).get(
-        "ranked_product_ids", []
-    )
+    return parse_json_response(
+        converse_text(bedrock, ROUTING_MODEL_ID, CONSOLIDATION_INSTRUCTION, prompt, image_bytes=image_bytes, image_format=image_format)
+    ).get("ranked_product_ids", [])
 
 
 @app.entrypoint
@@ -98,13 +99,15 @@ def invoke(payload: dict):
     while the generator call runs."""
     question = payload.get("prompt", "")
     image_base64 = payload.get("image_base64")
+    image_format = payload.get("image_format", "jpeg")
+    image_bytes = base64.b64decode(image_base64) if image_base64 else None
 
     dispatch_decision = decide_dispatch(_bedrock, question, has_image=bool(image_base64))
     specialist_payloads = {
         "search_agent": {"prompt": question},
         "graph_agent": {"prompt": question},
         "lookup_agent": {"prompt": question},
-        "image_agent": {"prompt": question, "image_base64": image_base64},
+        "image_agent": {"prompt": question, "image_base64": image_base64, "image_format": image_format},
     }
     to_dispatch = [name for name, should_dispatch in dispatch_decision.items() if should_dispatch]
 
@@ -135,7 +138,7 @@ def invoke(payload: dict):
         yield {"type": "final", "answer": answer, "citations": [], "dispatched": to_dispatch}
         return
 
-    ranked_product_ids = run_consolidation(_bedrock, question, candidates)
+    ranked_product_ids = run_consolidation(_bedrock, question, candidates, image_bytes=image_bytes, image_format=image_format)
     results = dedupe_and_rank(candidates, ranked_product_ids)
 
     if not results:
@@ -148,7 +151,7 @@ def invoke(payload: dict):
         return
 
     answer_text = ""
-    for chunk in stream_answer(_bedrock, GENERATOR_MODEL_ID, question, results):
+    for chunk in stream_answer(_bedrock, GENERATOR_MODEL_ID, question, results, image_bytes=image_bytes, image_format=image_format):
         answer_text += chunk
         yield {"type": "answer_chunk", "text": chunk}
 

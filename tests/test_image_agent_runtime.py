@@ -13,13 +13,17 @@ class StubBedrockClient:
         self._embedding = embedding
         self.converse_calls = 0
         self.embed_calls = 0
+        self.converse_kwargs: list[dict] = []
+        self.embed_kwargs: list[dict] = []
 
     def converse(self, **kwargs):
         self.converse_calls += 1
+        self.converse_kwargs.append(kwargs)
         return self._converse_responses.pop(0)
 
     def invoke_model(self, **kwargs):
         self.embed_calls += 1
+        self.embed_kwargs.append(kwargs)
 
         class _Body:
             def __init__(self, payload):
@@ -80,6 +84,26 @@ def test_invoke_embeds_the_image_and_returns_visual_matches(monkeypatch):
 
     assert [r["product_id"] for r in response["results"]] == ["P1", "P2"]
     assert bedrock.embed_calls == 1
+
+
+def test_invoke_uses_the_payload_image_format_for_embedding_and_converse(monkeypatch):
+    """The upload allowlist (src/api/presign_upload.py) accepts jpg/png/
+    webp, not jpeg only - a hardcoded "jpeg" here would mislabel a real
+    PNG/WEBP upload to both Cohere and Converse (see docs/designs/
+    03-image-upload.md)."""
+    monkeypatch.setattr(runtime, "get_opensearch_client", lambda: StubOpenSearchClient([]))
+    bedrock = StubBedrockClient(
+        [_tool_use_response("t1", "find_visually_similar_products", {}), _final_response("No close matches.")],
+        embedding=[0.2] * 1024,
+    )
+    monkeypatch.setattr(runtime, "_bedrock", bedrock)
+
+    payload = {"image_base64": base64.b64encode(b"fake-image-bytes").decode(), "image_format": "png"}
+    runtime.invoke(payload)
+
+    embed_body = json.loads(bedrock.embed_kwargs[0]["body"])
+    assert embed_body["images"][0].startswith("data:image/png;base64,")
+    assert bedrock.converse_kwargs[0]["messages"][0]["content"][0] == {"image": {"format": "png", "source": {"bytes": b"fake-image-bytes"}}}
 
 
 def test_invoke_uses_a_default_prompt_when_none_given(monkeypatch):

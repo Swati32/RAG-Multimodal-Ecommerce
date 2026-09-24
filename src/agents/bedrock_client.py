@@ -28,11 +28,22 @@ def bedrock_runtime_client(region: str):
     return boto3.client("bedrock-runtime", region_name=region, config=_RETRY_CONFIG.merge(Config(read_timeout=10, connect_timeout=5)))
 
 
-def agentcore_client(region: str):
-    """For the router's specialist dispatch (bedrock-agentcore:InvokeAgentRuntime).
-    A single dispatch call can run several Converse turns internally inside
-    the specialist (see MAX_TURNS in each *_agent_runtime.py), so this gets
-    a longer timeout than one bare Converse call - long enough for a normal
-    multi-turn specialist run, still bounded so one hung specialist can't
-    block the whole router request indefinitely."""
-    return boto3.client("bedrock-agentcore", region_name=region, config=_RETRY_CONFIG.merge(Config(read_timeout=20, connect_timeout=5)))
+def agentcore_client(region: str, read_timeout: int = 20):
+    """For bedrock-agentcore:InvokeAgentRuntime calls. Default read_timeout
+    (20s) is for the router's own specialist dispatch: a single dispatch
+    call can run several Converse turns internally inside the specialist
+    (see MAX_TURNS in each *_agent_runtime.py), so this needs more headroom
+    than one bare Converse call, but is still bounded so one hung
+    specialist can't block the whole router request indefinitely.
+
+    A caller invoking the *router itself* (e.g. the upload/query API's
+    Lambda - src/api/submit_query_handler.py) needs a longer override: the
+    router's full pipeline (routing + parallel specialist dispatch +
+    consolidation + streaming generation + verification) genuinely runs
+    longer than one specialist's own 20s budget - confirmed by a real
+    ValueError ("stream ended without a final event") the first time an
+    image query used this same default from the Lambda side, cutting the
+    connection before the router's SSE stream finished."""
+    return boto3.client(
+        "bedrock-agentcore", region_name=region, config=_RETRY_CONFIG.merge(Config(read_timeout=read_timeout, connect_timeout=5))
+    )

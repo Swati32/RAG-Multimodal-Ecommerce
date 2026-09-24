@@ -1,3 +1,4 @@
+import base64
 import json
 
 import boto3
@@ -21,13 +22,17 @@ class StubBedrockClient:
         self._texts = list(texts)
         self._stream_chunks = list(stream_chunks or [])
         self.calls = 0
+        self.converse_calls: list[dict] = []
+        self.stream_calls: list[dict] = []
 
     def converse(self, **kwargs):
         self.calls += 1
+        self.converse_calls.append(kwargs)
         return {"output": {"message": {"content": [{"text": self._texts.pop(0)}]}}}
 
     def converse_stream(self, **kwargs):
         self.calls += 1
+        self.stream_calls.append(kwargs)
         return {"stream": [{"contentBlockDelta": {"delta": {"text": chunk}}} for chunk in self._stream_chunks]}
 
 
@@ -115,6 +120,33 @@ def test_run_consolidation_extracts_ranked_ids():
     ranked = runtime.run_consolidation(bedrock, "find a moisturizer", [{"product_id": "P1"}, {"product_id": "P2"}])
 
     assert ranked == ["P2", "P1"]
+
+
+def test_invoke_attaches_the_uploaded_image_to_consolidation(arn_env, products_table, monkeypatch):
+    """Real bug, caught live: consolidation used to be text-only even for
+    an image-driven query, so Claude couldn't judge ImageAgent's candidates
+    against the actual reference image and refused with prose instead of
+    JSON - see docs/designs/03-image-upload.md."""
+    bedrock = StubBedrockClient(
+        texts=[
+            '{"search_agent": false, "graph_agent": false, "lookup_agent": false, "image_agent": true}',  # routing
+            '{"ranked_product_ids": ["P2"]}',  # consolidation
+            '{"verdicts": [{"product_id": "P2", "grounded": true}]}',  # verification
+        ],
+        stream_chunks=["Similar item. [[P2]]"],
+    )
+    agentcore = StubAgentCoreClient({"arn:image": [{"product_id": "P2", "text": "great sound"}]})
+    monkeypatch.setattr(runtime, "_bedrock", bedrock)
+    monkeypatch.setattr(runtime, "_agentcore", agentcore)
+
+    image_b64 = base64.b64encode(b"fake-jpeg-bytes").decode()
+
+    _invoke({"prompt": "find similar products", "image_base64": image_b64})
+
+    consolidation_call = bedrock.converse_calls[1]  # routing is [0], consolidation is [1]
+    assert consolidation_call["messages"][0]["content"][0] == {"image": {"format": "jpeg", "source": {"bytes": b"fake-jpeg-bytes"}}}
+    generation_call = bedrock.stream_calls[0]
+    assert generation_call["messages"][0]["content"][0] == {"image": {"format": "jpeg", "source": {"bytes": b"fake-jpeg-bytes"}}}
 
 
 def test_invoke_runs_the_full_pipeline_to_a_verified_cited_answer(arn_env, products_table, monkeypatch):

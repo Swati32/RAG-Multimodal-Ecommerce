@@ -31,9 +31,10 @@ Write the answer as plain text for the shopper to read directly - not JSON, no m
 
 Rules:
 - Every factual claim about a specific product must be traceable to one of the provided records - do not state a fact about a product that isn't supported by its record's content.
-- Immediately after any sentence that makes a specific claim about a product, insert a citation marker using that record's exact product_id: [[product_id]] - e.g. "It's praised for gentle moisturizing. [[B0123456]]"
+- This is mandatory, not optional: every sentence or bullet that names a specific product and says something about it MUST end with a citation marker for that product's exact product_id: [[product_id]] - e.g. "It's praised for gentle moisturizing. [[B0123456]]". A sentence naming a product with no marker is a formatting error - re-check your answer before finishing and add any marker you missed.
 - If the provided records don't actually answer the question, say so plainly rather than stretching an unrelated record into an answer - and don't insert any markers in that case.
-- A product being present in the records isn't itself a reason to cite it - only mark a sentence with a real, specific connection to that product's record."""
+- A product being present in the records isn't itself a reason to cite it - only mark a sentence with a real, specific connection to that product's record.
+- If a shopper's image is attached, the records below are already the system's matches for it - answer directly from the records rather than asking to see the image or describing it back; the image is context, not something you need permission to proceed without."""
 
 VERIFIER_INSTRUCTION = """You are a verifier for a multi-agent e-commerce product Q&A system. You are given a set of citations - each claims a snippet is supported by a specific product's retrieved record - and the actual records. Check each citation strictly: is the snippet actually present in (or a faithful close paraphrase of) that product's record content, not just plausible-sounding?
 
@@ -42,15 +43,22 @@ Respond with ONLY this JSON, no other text: {"verdicts": [{"product_id": "<id>",
 _CITATION_MARKER = re.compile(r"\[\[([A-Za-z0-9]+)\]\]")
 
 
-def stream_answer(bedrock, model_id: str, question: str, results: list[dict]):
+def stream_answer(bedrock, model_id: str, question: str, results: list[dict], image_bytes: bytes | None = None, image_format: str = "jpeg"):
     """Yields answer text deltas as Claude generates them (Bedrock Converse
     Stream), so a client can start rendering before the full answer is
     ready - design doc 04's "streaming improves perceived latency for a
-    chat-style answer"."""
+    chat-style answer".
+
+    `image_bytes`, when given, attaches the shopper's uploaded query image
+    - the same real bug found in consolidation (see docs/designs/
+    03-image-upload.md) also hit generation: a shopper's prompt like "find
+    products similar to this image" made Claude refuse to answer at all
+    ("I'm unable to see or process images directly"), even though the
+    actual records to write from were already sitting right there.
+    `image_format` must match the actual upload (jpeg/png/webp)."""
     prompt = f"Question: {question}\n\nRetrieved records:\n{json.dumps(results, indent=2)}"
-    response = bedrock.converse_stream(
-        modelId=model_id, system=[{"text": GENERATOR_INSTRUCTION}], messages=[{"role": "user", "content": [{"text": prompt}]}]
-    )
+    content = [{"image": {"format": image_format, "source": {"bytes": image_bytes}}}, {"text": prompt}] if image_bytes else [{"text": prompt}]
+    response = bedrock.converse_stream(modelId=model_id, system=[{"text": GENERATOR_INSTRUCTION}], messages=[{"role": "user", "content": content}])
     for event in response["stream"]:
         delta = event.get("contentBlockDelta", {}).get("delta", {})
         if "text" in delta:
