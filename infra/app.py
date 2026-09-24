@@ -3,6 +3,7 @@ import os
 
 import aws_cdk as cdk
 
+from stacks.agents_stack import AgentsStack
 from stacks.data_stack import DataStack
 from stacks.glue_stack import GlueStack
 from stacks.search_stack import SearchStack
@@ -22,6 +23,16 @@ GlueStack(
     data_bucket=data_stack.data_bucket,
     products_table=data_stack.products_table,
     reviews_table=data_stack.reviews_table,
+    graph_edges_table=data_stack.graph_edges_table,
+    search_domain=search_stack.domain,
+    env=env,
+)
+AgentsStack(
+    app,
+    "RagEcommerce-Agents",
+    products_table=data_stack.products_table,
+    reviews_table=data_stack.reviews_table,
+    graph_edges_table=data_stack.graph_edges_table,
     search_domain=search_stack.domain,
     env=env,
 )

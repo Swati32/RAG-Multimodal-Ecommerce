@@ -24,6 +24,12 @@ data = [
     "requests>=2.31",
     "huggingface_hub>=0.24",
 ]
+agents = [
+    "bedrock-agentcore>=1.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
