@@ -47,3 +47,46 @@ def build_chunk_document(chunk: Chunk, product: Product, embedding: list[float])
         "text": chunk.text,
         "embedding": embedding,
     }
+
+
+# Cohere Embed v4 defaults to 1536-dim, but OpenSearch's lucene k-NN engine
+# caps vector dimension at 1024 (a real 400 on first attempt: "Dimension
+# value cannot be greater than 1024 for vector") - requested at 1024 via
+# `output_dimension` instead, see infra/glue_scripts/embed_images.py. Still
+# a separate index/field from Titan's `chunks.embedding`: same dimension by
+# coincidence, not the same vector space - the two models' embeddings are
+# not comparable or interchangeable.
+IMAGE_EMBEDDING_DIM = 1024
+
+IMAGE_INDEX_MAPPING = {
+    "settings": {"index": {"knn": True}},
+    "mappings": {
+        "properties": {
+            "image_id": {"type": "keyword"},
+            "product_id": {"type": "keyword"},
+            "image_url": {"type": "keyword"},
+            "category": {"type": "keyword"},
+            "brand": {"type": "keyword"},
+            "price": {"type": "float"},
+            "avg_rating": {"type": "float"},
+            "embedding": {
+                "type": "knn_vector",
+                "dimension": IMAGE_EMBEDDING_DIM,
+                "method": {"engine": "lucene", "name": "hnsw", "space_type": "cosinesimil"},
+            },
+        }
+    },
+}
+
+
+def build_image_document(product: Product, image_url: str, embedding: list[float]) -> dict:
+    return {
+        "image_id": f"{product.product_id}#image0",
+        "product_id": product.product_id,
+        "image_url": image_url,
+        "category": product.category,
+        "brand": product.brand,
+        "price": product.price,
+        "avg_rating": product.avg_rating,
+        "embedding": embedding,
+    }

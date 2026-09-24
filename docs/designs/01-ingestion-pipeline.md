@@ -42,7 +42,15 @@ A Step Functions state machine sequences steps 2–5.
 | Product descriptions | Embed whole if under ~300 words; otherwise sentence-aware split into ~300-word chunks | Most descriptions are short enough to need no splitting at all |
 | Reviews | One chunk per review in most cases; long reviews sentence-aware split at the same budget | Reviews are typically short; splitting only when needed keeps chunk count down |
 | Tags/attributes (brand, category, color, size) | Not chunked as free text — stored as structured metadata on every chunk (see OpenSearch filtering below); additionally rendered as one synthetic sentence per product (e.g. "Black leather wireless over-ear headphones by Sony") and embedded | Lets attribute-phrased semantic queries match, without treating structured facts as prose |
-| Images | One embedding per image, no chunking; multiple images per product are separate documents linked by `product_id` | Images aren't decomposable the way text is |
+| Images | One embedding per **primary** image per product (not every image), no chunking — see "Image embeddings" below for why the scope is narrower than originally planned | Images aren't decomposable the way text is |
+
+### Image embeddings: Cohere Embed v4, one per product
+
+**Deviation from the original design**, forced by model availability, not chosen: `amazon.titan-embed-image-v1` (Titan Multimodal Embeddings) isn't offered on this account in us-east-2 — `aws bedrock list-foundation-models` lists only `amazon.titan-embed-text-v2:0` (text) and `cohere.embed-v4:0` (text + image) for embeddings. **Resolved: `cohere.embed-v4:0`** via inference profile `us.cohere.embed-v4:0` (confirmed `ACTIVE`), called real-time the same way Titan text embeddings are — request body `{"images": ["data:image/jpeg;base64,<...>"], "input_type": "image", "embedding_types": ["float"], "output_dimension": 1024}`, response at `embeddings.float[0]`, verified against a real product image before building the pipeline around it. **`output_dimension: 1024`, not Cohere's 1536 default** — a real first run hit `400 mapper_parsing_exception: "Dimension value cannot be greater than 1024 for vector"`, since OpenSearch's `lucene` k-NN engine (chosen for the text index) caps vector dimension at 1024; requesting 1024 directly from Cohere avoided adding a second ANN engine just for this index. Image embeddings still live in their own OpenSearch index (`product_images`), not the `chunks` index — same dimension as Titan's text embeddings by coincidence, not the same vector space, so they can't share an index either way. See `src/ingestion/opensearch_documents.py`.
+
+**Also scoped down from "every image" to "one (the first) image per product"**: the 5,000 loaded products carry 24,062 images total. Cohere Embed v4's on-demand quota is 200 requests/min (`aws service-quotas list-service-quotas --service-code bedrock`) — lower than Titan text's 600/min — so embedding every image would take roughly 2.5-3 hours against ~33 minutes for one per product. Disproportionate to what a demo needs (ImageAgent just needs something real to match against per product), consistent with the proportionality calls made elsewhere in this design (e.g. Aurora PostgreSQL vs. DynamoDB for graph storage).
+
+Run via `start-job-run`: `rag-ecommerce-embed-images` (`infra/glue_scripts/embed_images.py`) downloads each product's primary image and embeds it, writing to S3; `rag-ecommerce-load-images` (`infra/glue_scripts/load_images.py`) bulk-indexes into the `product_images` OpenSearch index — same embed/load split as the text pipeline.
 
 Every chunk gets a deterministic id (`{product_id}#{chunk_index}`) carrying `product_id` as metadata, so any retrieved chunk traces back to its source product (and review id, for reviews).
 
@@ -66,9 +74,22 @@ The design originally specced Amazon Neptune for the knowledge graph, with a Dyn
 
 **Decision**: DynamoDB adjacency-list is now the only graph implementation, not a fallback. One table, `GraphEdges`:
 - `node` (partition key) — `"product#P1"`, `"category#Electronics"`, `"brand#Acme"`
-- `edge` (sort key) — `"{edge_type}#{target}"`, e.g. `"BELONGS_TO#category#Electronics"`, `"CO_PURCHASED_WITH#product#P2"`
+- `edge` (sort key) — `"{edge_type}#{target}"`, e.g. `"BELONGS_TO#category#Electronics"`, `"CO_REVIEWED_WITH#product#P2"`
 
-Symmetric relationships (co-purchase) are written in both directions at ingestion time, so every traversal GraphAgent needs — "everything connected to this node" — is a single-partition `Query`, no GSI and no second index to keep in sync.
+Symmetric relationships (brand, category, co-reviewed) are written in both directions at ingestion time, so every traversal GraphAgent needs — "everything connected to this node" — is a single-partition `Query`, no GSI and no second index to keep in sync.
+
+### Graph edges: `CO_REVIEWED_WITH`, not `CO_PURCHASED_WITH`
+
+**Deviation from the original design**, forced by the dataset, not chosen: the plan was `CO_PURCHASED_WITH` edges derived from the metadata's `bought_together` field. A real check of all 5,000 loaded products found `bought_together` empty for every single one — this field isn't populated for the All_Beauty category in this dataset release. The `categories` breadcrumb field is empty too; only `main_category` survives, and it has just 2 distinct values across the whole loaded set ("All Beauty", "Premium Beauty"), so "category hierarchy" here is genuinely flat, not a real tree.
+
+**Resolved**: `rag-ecommerce-build-graph-edges` (`infra/glue_scripts/build_graph_edges.py`) derives three real edge types instead:
+- `BELONGS_TO` / `HAS_PRODUCT` — product ↔ category (flat, only 2 distinct categories, but real)
+- `HAS_BRAND` / `HAS_PRODUCT` — product ↔ brand, from the `store` field (3,386 distinct brands across 5,000 products — the richest of the three)
+- `CO_REVIEWED_WITH` — product ↔ product, for pairs of products reviewed by the same person (extracted from `review_id`'s embedded user id). A real, derived proxy for "goes with this," standing in for the co-purchase signal the dataset doesn't provide — deliberately relabeled rather than passed off as literal bought-together data. Checked against the actual 10,313 ingested reviews: 87 reviewers reviewed more than one of the 5,000 loaded products (one reviewer up to 13), producing 448 edges (224 pairs, both directions) — a real but sparse signal, not a rich one.
+
+Run via `start-job-run`, `SUCCEEDED` in 104s: **19,458 edges** (5,000 `BELONGS_TO` + 9,505 `HAS_PRODUCT` + 4,505 `HAS_BRAND` + 448 `CO_REVIEWED_WITH`), verified via a full table scan.
+
+**Consequence for GraphAgent** (design doc [02](02-retrieval-agents.md)): its co-purchase-flavored example query ("what pairs well with this backpack") now answers from the sparser `CO_REVIEWED_WITH` signal, not a rich bought-together graph — expect thinner results for that query type than the original design implied.
 
 ### Simulating refresh cadence
 
@@ -97,4 +118,4 @@ The dataset's ASIN is used as `product_id` everywhere (DynamoDB key, OpenSearch 
 
 ## Status
 
-In progress — steps 1-5 (download, normalize, chunk + summarize, embed, index) implemented as real Glue jobs, deployed, and run end-to-end: 5,000 products, 10,313 reviews, 20,339 chunks indexed in OpenSearch with real embeddings. Graph edges, Step Functions orchestration, and the daily refresh trigger not yet built. See [../PROGRESS.md](../PROGRESS.md)
+In progress — steps 1-5 (download, normalize, chunk + summarize, embed, index) plus the graph builder implemented as real Glue jobs, deployed, and run end-to-end: 5,000 products, 10,313 reviews, 20,339 chunks indexed in OpenSearch with real embeddings, 19,458 graph edges in DynamoDB. Step Functions orchestration and the daily refresh trigger not yet built. See [../PROGRESS.md](../PROGRESS.md)

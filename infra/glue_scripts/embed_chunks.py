@@ -16,7 +16,6 @@ workaround note in load_dataset.py, same Glue Python Shell quirk applies.
 import glob
 import json
 import sys
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -27,6 +26,8 @@ from botocore.exceptions import ClientError
 for zip_path in glob.glob("/tmp/glue-python-libs-*/*.zip"):
     sys.path.insert(0, zip_path)
 
+from rate_limiter import RateLimiter
+
 REGION = "us-east-2"
 MAX_WORKERS = 10
 MAX_RETRIES = 5
@@ -35,24 +36,6 @@ MAX_REQUESTS_PER_MINUTE = 540  # 90% of the 600/min quota, margin for retries/ji
 args = getResolvedOptions(
     sys.argv, ["input_bucket", "input_key", "output_bucket", "output_key", "embedding_model_id"]
 )
-
-
-class RateLimiter:
-    """Paces calls to a fixed rate across all threads, rather than relying
-    on worker count to indirectly stay under a requests-per-minute quota."""
-
-    def __init__(self, max_per_minute: int):
-        self._interval = 60.0 / max_per_minute
-        self._lock = threading.Lock()
-        self._next_time = time.monotonic()
-
-    def wait(self) -> None:
-        with self._lock:
-            now = time.monotonic()
-            wait_time = max(0.0, self._next_time - now)
-            self._next_time = max(now, self._next_time) + self._interval
-        if wait_time > 0:
-            time.sleep(wait_time)
 
 
 def embed_with_retry(client, model_id: str, text: str, limiter: RateLimiter) -> list:

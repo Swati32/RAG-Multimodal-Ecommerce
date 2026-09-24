@@ -32,6 +32,7 @@ class GlueStack(Stack):
         data_bucket: s3.IBucket,
         products_table: dynamodb.ITableV2,
         reviews_table: dynamodb.ITableV2,
+        graph_edges_table: dynamodb.ITableV2,
         search_domain: opensearch.IDomain,
         **kwargs,
     ) -> None:
@@ -48,6 +49,7 @@ class GlueStack(Stack):
         self._modules_asset.grant_read(self.role)
         products_table.grant_read_write_data(self.role)
         reviews_table.grant_read_write_data(self.role)
+        graph_edges_table.grant_read_write_data(self.role)
         data_bucket.grant_read_write(self.role)
         search_domain.grant_read_write(self.role)
         self.role.add_to_policy(
@@ -121,6 +123,48 @@ class GlueStack(Stack):
                 "--products_table": products_table.table_name,
                 "--opensearch_endpoint": search_domain.domain_endpoint,
                 "--index_name": "chunks",
+            },
+            timeout_minutes=90,
+        )
+
+        self.build_graph_edges_job = self._python_shell_job(
+            "BuildGraphEdgesJob",
+            job_name="rag-ecommerce-build-graph-edges",
+            script_path=REPO_ROOT / "infra/glue_scripts/build_graph_edges.py",
+            default_arguments={
+                "--products_table": products_table.table_name,
+                "--reviews_table": reviews_table.table_name,
+                "--graph_edges_table": graph_edges_table.table_name,
+            },
+        )
+
+        self.embed_images_job = self._python_shell_job(
+            "EmbedImagesJob",
+            job_name="rag-ecommerce-embed-images",
+            script_path=REPO_ROOT / "infra/glue_scripts/embed_images.py",
+            default_arguments={
+                "--additional-python-modules": "boto3>=1.34,requests",
+                "--products_table": products_table.table_name,
+                "--output_bucket": data_bucket.bucket_name,
+                "--output_key": "processed/embedded_images.jsonl",
+                "--embedding_model_id": "us.cohere.embed-v4:0",
+            },
+            # Rate-limited to 180 req/min (Cohere Embed v4's 200/min quota) -
+            # 5,000 images plus per-image download time needs real margin.
+            timeout_minutes=90,
+        )
+
+        self.load_images_job = self._python_shell_job(
+            "LoadImagesJob",
+            job_name="rag-ecommerce-load-images",
+            script_path=REPO_ROOT / "infra/glue_scripts/load_images.py",
+            default_arguments={
+                "--additional-python-modules": "boto3>=1.34,opensearch-py>=2.4",
+                "--input_bucket": data_bucket.bucket_name,
+                "--input_key": "processed/embedded_images.jsonl",
+                "--products_table": products_table.table_name,
+                "--opensearch_endpoint": search_domain.domain_endpoint,
+                "--index_name": "product_images",
             },
             timeout_minutes=90,
         )
