@@ -9,6 +9,7 @@ Judge: a stronger model grading a weaker one, to avoid self-grading bias
 """
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -23,6 +24,13 @@ GENERATOR_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 JUDGE_MODEL_ID = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
 SAMPLE_SIZE = 10
 MIN_WORDS = 150
+
+_JSON_FENCE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
+
+
+def _parse_judge_response(raw: str) -> dict:
+    fenced = _JSON_FENCE.search(raw)
+    return json.loads(fenced.group(1) if fenced else raw)
 
 JUDGE_PROMPT = """You are grading a product review summary for a RAG ingestion pipeline.
 
@@ -48,7 +56,7 @@ def main() -> None:
         for review_text in sample:
             summary = generator.summarize(template.format(review_text=review_text))
             judged = judge.summarize(JUDGE_PROMPT.format(review_text=review_text, summary=summary))
-            scores.append(json.loads(judged))
+            scores.append(_parse_judge_response(judged))
 
         avg_groundedness = sum(s["groundedness"] for s in scores) / len(scores)
         avg_coverage = sum(s["coverage"] for s in scores) / len(scores)
