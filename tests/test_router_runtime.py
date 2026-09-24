@@ -11,16 +11,24 @@ from ingestion.models import Product
 
 
 class StubBedrockClient:
-    """Queues scripted Converse text responses - matches the injected-stub
-    pattern used for Claude calls elsewhere (see test_summarization.py)."""
+    """Queues scripted Converse text responses (routing/consolidation/
+    verification) and, separately, a queue of streamed-answer-chunk lists
+    for the generation step (one entry per `invoke()` call, consumed by
+    `converse_stream`) - matches the injected-stub pattern used for Claude
+    calls elsewhere (see test_summarization.py)."""
 
-    def __init__(self, texts: list[str]):
+    def __init__(self, texts: list[str], stream_chunks: list[str] | None = None):
         self._texts = list(texts)
+        self._stream_chunks = list(stream_chunks or [])
         self.calls = 0
 
     def converse(self, **kwargs):
         self.calls += 1
         return {"output": {"message": {"content": [{"text": self._texts.pop(0)}]}}}
+
+    def converse_stream(self, **kwargs):
+        self.calls += 1
+        return {"stream": [{"contentBlockDelta": {"delta": {"text": chunk}}} for chunk in self._stream_chunks]}
 
 
 class _StubStreamingBody:
@@ -83,6 +91,16 @@ def products_table(monkeypatch):
         yield table
 
 
+def _invoke(payload: dict) -> tuple[list[dict], dict]:
+    """`invoke()` is a generator (see docs/designs/04-inference-serving.md,
+    "streaming to client") - collect every yielded event and pull out the
+    single terminal `{"type": "final", ...}` event, which carries the same
+    shape the old plain-dict return used to."""
+    events = list(runtime.invoke(payload))
+    final = next(event for event in events if event["type"] == "final")
+    return events, final
+
+
 def test_decide_dispatch_forces_image_agent_off_when_no_image_given():
     bedrock = StubBedrockClient(['{"search_agent": true, "graph_agent": false, "lookup_agent": false, "image_agent": true}'])
 
@@ -101,18 +119,18 @@ def test_run_consolidation_extracts_ranked_ids():
 
 def test_invoke_runs_the_full_pipeline_to_a_verified_cited_answer(arn_env, products_table, monkeypatch):
     bedrock = StubBedrockClient(
-        [
+        texts=[
             '{"search_agent": true, "graph_agent": false, "lookup_agent": false, "image_agent": false}',  # routing
             '{"ranked_product_ids": ["P2", "P1"]}',  # consolidation
-            '{"answer": "The Acme headphones have great sound.", "citations": [{"product_id": "P2", "snippet": "great sound"}]}',  # generation
             '{"verdicts": [{"product_id": "P2", "grounded": true}]}',  # verification
-        ]
+        ],
+        stream_chunks=["The Acme headphones have ", "great sound. [[P2]]"],  # streamed generation
     )
     agentcore = StubAgentCoreClient({"arn:search": [{"product_id": "P1", "text": "ok product"}, {"product_id": "P2", "text": "great sound"}]})
     monkeypatch.setattr(runtime, "_bedrock", bedrock)
     monkeypatch.setattr(runtime, "_agentcore", agentcore)
 
-    response = runtime.invoke({"prompt": "find a gentle moisturizer"})
+    events, response = _invoke({"prompt": "find a gentle moisturizer"})
 
     assert response["dispatched"] == ["search_agent"]
     assert agentcore.invoked_arns == ["arn:search"]
@@ -123,9 +141,12 @@ def test_invoke_runs_the_full_pipeline_to_a_verified_cited_answer(arn_env, produ
             "title": "Wireless Headphones",
             "image_url": "https://example.com/p2.jpg",
             "product_url": "/products/P2",
-            "snippet": "great sound",
+            "snippet": "The Acme headphones have great sound.",
         }
     ]
+    # the answer was actually streamed, not assembled and returned in one shot
+    chunk_events = [event for event in events if event["type"] == "answer_chunk"]
+    assert [event["text"] for event in chunk_events] == ["The Acme headphones have ", "great sound. [[P2]]"]
 
 
 def test_invoke_never_dispatches_image_agent_without_an_uploaded_image(arn_env, monkeypatch):
@@ -134,7 +155,7 @@ def test_invoke_never_dispatches_image_agent_without_an_uploaded_image(arn_env, 
     monkeypatch.setattr(runtime, "_bedrock", bedrock)
     monkeypatch.setattr(runtime, "_agentcore", agentcore)
 
-    response = runtime.invoke({"prompt": "what does this look like"})
+    _, response = _invoke({"prompt": "what does this look like"})
 
     assert response["dispatched"] == []
     assert agentcore.invoked_arns == []
@@ -147,12 +168,12 @@ def test_invoke_degrades_gracefully_when_one_specialist_times_out(arn_env, produ
     the whole request - the router should still answer from whichever
     specialists did respond."""
     bedrock = StubBedrockClient(
-        [
+        texts=[
             '{"search_agent": true, "graph_agent": true, "lookup_agent": false, "image_agent": false}',  # routing
             '{"ranked_product_ids": ["P2"]}',  # consolidation
-            '{"answer": "The Acme headphones have great sound.", "citations": [{"product_id": "P2", "snippet": "great sound"}]}',  # generation
             '{"verdicts": [{"product_id": "P2", "grounded": true}]}',  # verification
-        ]
+        ],
+        stream_chunks=["The Acme headphones have great sound. [[P2]]"],
     )
     agentcore = StubAgentCoreClient(
         {"arn:search": [{"product_id": "P2", "text": "great sound"}]},
@@ -161,7 +182,7 @@ def test_invoke_degrades_gracefully_when_one_specialist_times_out(arn_env, produ
     monkeypatch.setattr(runtime, "_bedrock", bedrock)
     monkeypatch.setattr(runtime, "_agentcore", agentcore)
 
-    response = runtime.invoke({"prompt": "find a gentle moisturizer"})
+    _, response = _invoke({"prompt": "find a gentle moisturizer"})
 
     assert set(agentcore.invoked_arns) == {"arn:search", "arn:graph"}
     assert response["answer"] == "The Acme headphones have great sound."
@@ -174,7 +195,7 @@ def test_invoke_skips_consolidation_and_generation_when_dispatch_found_nothing(a
     monkeypatch.setattr(runtime, "_bedrock", bedrock)
     monkeypatch.setattr(runtime, "_agentcore", agentcore)
 
-    response = runtime.invoke({"prompt": "find something extremely obscure"})
+    _, response = _invoke({"prompt": "find something extremely obscure"})
 
     assert response["citations"] == []
     assert bedrock.calls == 1  # only the routing call - no consolidation/generation wasted on zero candidates

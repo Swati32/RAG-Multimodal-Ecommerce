@@ -2,27 +2,56 @@ import boto3
 import pytest
 from moto import mock_aws
 
-from agents.answer_generation import generate_answer, resolve_citations, verify_citations
+from agents.answer_generation import extract_citations, resolve_citations, stream_answer, verify_citations
 from ingestion.dynamo_writer import upsert_product
 from ingestion.models import Product
 
 
 class StubBedrockClient:
-    def __init__(self, texts: list[str]):
-        self._texts = list(texts)
+    def __init__(self, texts: list[str] | None = None, stream_chunks: list[str] | None = None):
+        self._texts = list(texts or [])
+        self._stream_chunks = list(stream_chunks or [])
         self.calls = 0
 
     def converse(self, **kwargs):
         self.calls += 1
         return {"output": {"message": {"content": [{"text": self._texts.pop(0)}]}}}
 
+    def converse_stream(self, **kwargs):
+        self.calls += 1
+        return {"stream": [{"contentBlockDelta": {"delta": {"text": chunk}}} for chunk in self._stream_chunks]}
 
-def test_generate_answer_parses_answer_and_citations():
-    bedrock = StubBedrockClient(['{"answer": "It has great battery life.", "citations": [{"product_id": "P1", "snippet": "lasts all day"}]}'])
 
-    result = generate_answer(bedrock, "model", "How's the battery?", [{"product_id": "P1", "text": "Battery lasts all day."}])
+def test_stream_answer_yields_text_deltas_as_they_arrive():
+    bedrock = StubBedrockClient(stream_chunks=["It has ", "great battery life. [[P1]]"])
 
-    assert result == {"answer": "It has great battery life.", "citations": [{"product_id": "P1", "snippet": "lasts all day"}]}
+    chunks = list(stream_answer(bedrock, "model", "How's the battery?", [{"product_id": "P1", "text": "Battery lasts all day."}]))
+
+    assert chunks == ["It has ", "great battery life. [[P1]]"]
+
+
+def test_extract_citations_parses_marker_and_strips_it_from_the_answer():
+    answer, citations = extract_citations("It has great battery life. [[P1]] It also looks nice.", [])
+
+    assert answer == "It has great battery life. It also looks nice."
+    assert citations == [{"product_id": "P1", "snippet": "It has great battery life."}]
+
+
+def test_extract_citations_returns_the_answer_unchanged_when_there_are_no_markers():
+    answer, citations = extract_citations("Nothing in the records answers that.", [])
+
+    assert answer == "Nothing in the records answers that."
+    assert citations == []
+
+
+def test_extract_citations_handles_multiple_markers():
+    answer, citations = extract_citations("Great sound. [[P1]] Long battery. [[P2]]", [])
+
+    assert answer == "Great sound. Long battery."
+    assert citations == [
+        {"product_id": "P1", "snippet": "Great sound."},
+        {"product_id": "P2", "snippet": "Long battery."},
+    ]
 
 
 def test_verify_citations_drops_ungrounded_ones():

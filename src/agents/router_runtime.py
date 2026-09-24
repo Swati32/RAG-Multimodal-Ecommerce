@@ -30,7 +30,7 @@ import boto3
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from botocore.exceptions import ConnectTimeoutError, ReadTimeoutError
 
-from agents.answer_generation import generate_answer, resolve_citations, verify_citations
+from agents.answer_generation import extract_citations, resolve_citations, stream_answer, verify_citations
 from agents.bedrock_client import agentcore_client, bedrock_runtime_client
 from agents.router_tools import converse_text, dedupe_and_rank, dispatch_specialist, parse_json_response
 
@@ -87,7 +87,15 @@ def run_consolidation(bedrock, question: str, candidates: list[dict]) -> list[st
 
 
 @app.entrypoint
-def invoke(payload: dict) -> dict:
+def invoke(payload: dict):
+    """A generator, not a plain function - `bedrock_agentcore`'s
+    BedrockAgentCoreApp streams a generator's yielded values back to the
+    caller as server-sent events (see docs/designs/04-inference-serving.md,
+    "streaming to client"). Every path yields exactly one `{"type":
+    "final", ...}` event as its last event, carrying the same shape the
+    old plain-dict return used to - the only genuinely streamed part is the
+    answer text itself, via `{"type": "answer_chunk", "text": ...}` events
+    while the generator call runs."""
     question = payload.get("prompt", "")
     image_base64 = payload.get("image_base64")
 
@@ -124,19 +132,31 @@ def invoke(payload: dict) -> dict:
             if to_dispatch
             else "I couldn't determine which part of the catalog applies to this question."
         )
-        return {"answer": answer, "citations": [], "dispatched": to_dispatch}
+        yield {"type": "final", "answer": answer, "citations": [], "dispatched": to_dispatch}
+        return
 
     ranked_product_ids = run_consolidation(_bedrock, question, candidates)
     results = dedupe_and_rank(candidates, ranked_product_ids)
 
     if not results:
-        return {"answer": "I found some information but none of it was actually relevant to your question.", "citations": [], "dispatched": to_dispatch}
+        yield {
+            "type": "final",
+            "answer": "I found some information but none of it was actually relevant to your question.",
+            "citations": [],
+            "dispatched": to_dispatch,
+        }
+        return
 
-    draft = generate_answer(_bedrock, GENERATOR_MODEL_ID, question, results)
-    verified_citations = verify_citations(_bedrock, VERIFIER_MODEL_ID, draft["citations"], results)
+    answer_text = ""
+    for chunk in stream_answer(_bedrock, GENERATOR_MODEL_ID, question, results):
+        answer_text += chunk
+        yield {"type": "answer_chunk", "text": chunk}
+
+    clean_answer, raw_citations = extract_citations(answer_text, results)
+    verified_citations = verify_citations(_bedrock, VERIFIER_MODEL_ID, raw_citations, results)
     resolved_citations = resolve_citations(_dynamodb.Table(os.environ["PRODUCTS_TABLE"]), verified_citations)
 
-    return {"answer": draft["answer"], "citations": resolved_citations, "dispatched": to_dispatch}
+    yield {"type": "final", "answer": clean_answer, "citations": resolved_citations, "dispatched": to_dispatch}
 
 
 if __name__ == "__main__":

@@ -64,7 +64,14 @@ class AgentsStack(Stack):
         )
         runtime.add_to_role_policy(
             iam.PolicyStatement(
-                actions=["bedrock:InvokeModel"],
+                # InvokeModelWithResponseStream is what Converse's streaming
+                # variant (converse_stream, used by the router's generator -
+                # see docs/designs/04-inference-serving.md) calls under the
+                # hood - a separate permission from plain InvokeModel, not
+                # implied by it (a real AccessDeniedException on
+                # bedrock:InvokeModelWithResponseStream otherwise, even
+                # though bedrock:InvokeModel already worked).
+                actions=["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
                 resources=[
                     "arn:aws:bedrock:*::foundation-model/*",
                     f"arn:aws:bedrock:*:{self.account}:inference-profile/*",
