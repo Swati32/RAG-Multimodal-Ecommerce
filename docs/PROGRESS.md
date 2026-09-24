@@ -4,7 +4,7 @@ Tracks implementation status per workflow. Update this file as each workflow mov
 
 | Workflow | Design | Implementation | Status |
 | --- | --- | --- | --- |
-| Ingestion & Refresh Pipeline | [01](designs/01-ingestion-pipeline.md) | [src/ingestion](../src/ingestion) | In progress |
+| Ingestion & Refresh Pipeline | [01](designs/01-ingestion-pipeline.md) | [src/ingestion](../src/ingestion) | Complete |
 | Retrieval Agents & Query Orchestration | [02](designs/02-retrieval-agents.md) | [src/agents](../src/agents) | Core pipeline complete |
 | Image Upload & Multimodal Query | [03](designs/03-image-upload.md) | — | Not started |
 | Inference Serving | [04](designs/04-inference-serving.md) | — | Not started |
@@ -39,9 +39,15 @@ One more environment gotcha found and recorded in CLAUDE.md: Glue Python Shell b
 
 Deliberately scoped to one (the first) image per product, not all 24,062 images across the catalog — see [01](designs/01-ingestion-pipeline.md#image-embeddings-cohere-embed-v4-one-per-product) for why.
 
-Not yet implemented:
-- Step Functions state machine wiring the stages together
-- Daily EventBridge trigger for delta refreshes
+**Step Functions orchestration + daily EventBridge trigger done for real, deployed and verified — workflow 01 is now fully complete.** A real delta-refresh mechanism, not just orchestration wiring around the existing full-load jobs:
+- `src/ingestion/delta_reviews.py` — `select_new_reviews`, a pure function picking up to a bounded cap of not-yet-loaded reviews per product, unit-tested
+- `infra/glue_scripts/load_delta_reviews.py` — new Glue job, re-streams the dataset each run (no persisted cursor - simpler, and fast enough at this dataset's scale) and upserts only what's genuinely new
+- `infra/glue_scripts/chunk_and_summarize.py` extended with a delta mode (`--reviews_input_key`) that chunks only the new reviews, not the whole catalog — full mode (the existing initial-load usage) is unchanged and still the default
+- `infra/stacks/refresh_stack.py` (new `RagEcommerce-Refresh` stack) — a Step Functions state machine (`aws_stepfunctions_tasks.GlueStartJobRun`, `.sync` integration so each stage really waits for the previous one) chaining `LoadDeltaReviews → ChunkDeltaReviews → EmbedDeltaChunks → LoadDeltaIntoOpenSearch → RebuildGraphEdges`, each Glue task's `Arguments` pointing the reused job definitions at delta-specific S3 keys instead of the full-corpus ones; an EventBridge `rate(1 day)` rule targets it directly, no Lambda glue code needed
+
+Deviates from the original plan in two deliberate ways (both in [01](designs/01-ingestion-pipeline.md#simulating-refresh-cadence)): delta batches are "next N not-yet-loaded reviews per product" rather than calendar week/month slices (simpler, same effect, correctness doesn't depend on the calendar framing), and graph edges are fully rebuilt every run rather than incrementally diffed (the rebuild is cheap enough — ~100s — that incremental edge logic isn't worth the complexity).
+
+**Real, unprompted verification**: EventBridge's `rate()` schedule fires once immediately on rule creation, not only on the recurring interval — so the very first execution ran automatically within seconds of deploying, not a manually-triggered or mocked test. It `SUCCEEDED` in ~6 minutes. Checked before vs. after, all real counts: **DynamoDB reviews 10,313 → 10,513** (+200, matching the S3 delta batch), **OpenSearch `chunks` index 20,339 → 20,539** (+200, real new embeddings, not placeholders), **`GraphEdges` 19,458 → 19,476** (+18 = 9 new `CO_REVIEWED_WITH` pairs × 2 directions, from reviewers whose newly-added review now overlaps with an existing one) — exactly the staleness test the design doc's follow-up called for ("confirm the graph and search index both reflect the newer state"), demonstrated in one real run rather than simulated.
 
 ## Retrieval Agents & Query Orchestration — what's done
 
@@ -112,9 +118,10 @@ Workflow 02 (Retrieval Agents & Query Orchestration) is now functionally complet
 
 | Stack | Resources | Status |
 | --- | --- | --- |
-| `RagEcommerce-Data` | S3 bucket, DynamoDB Products (5,000 items) + Reviews (10,313 items) + GraphEdges (19,458 items) tables | `CREATE_COMPLETE`, loaded |
-| `RagEcommerce-Search` | Single-node OpenSearch domain (t3.small.search), 1 node | `CREATE_COMPLETE`, `chunks` index (20,339 docs) + `product_images` index (5,000 docs) |
-| `RagEcommerce-Glue` | `rag-ecommerce-load-dataset` + `-chunk-and-summarize` + `-embed-chunks` + `-load-opensearch` + `-build-graph-edges` + `-embed-images` + `-load-images` Glue Python Shell jobs (1 DPU each), shared IAM role, S3 script/module assets | `CREATE_COMPLETE`, all seven job runs `SUCCEEDED` |
+| `RagEcommerce-Data` | S3 bucket, DynamoDB Products (5,000 items) + Reviews (10,513 items) + GraphEdges (19,476 items) tables | `CREATE_COMPLETE`, loaded |
+| `RagEcommerce-Search` | Single-node OpenSearch domain (t3.small.search), 1 node | `CREATE_COMPLETE`, `chunks` index (20,539 docs) + `product_images` index (5,000 docs) |
+| `RagEcommerce-Glue` | `rag-ecommerce-load-dataset` + `-load-delta-reviews` + `-chunk-and-summarize` + `-embed-chunks` + `-load-opensearch` + `-build-graph-edges` + `-embed-images` + `-load-images` Glue Python Shell jobs (1 DPU each), shared IAM role, S3 script/module assets | `CREATE_COMPLETE`, all eight job runs `SUCCEEDED` |
+| `RagEcommerce-Refresh` | Step Functions state machine (`rag-ecommerce-daily-refresh`) + EventBridge daily schedule | `CREATE_COMPLETE`, first (automatic) execution `SUCCEEDED` in ~6 min |
 | `RagEcommerce-Agents` | LookupAgent + SearchAgent + GraphAgent + ImageAgent + Router (Bedrock AgentCore Runtime, ARM64 containers, CDK-built/pushed images) | `CREATE_COMPLETE`, all five runtimes `READY`, each verified via real invocations |
 
 Not deployed: nothing else — `RagEcommerce-Graph` (Neptune) was deleted, see above.

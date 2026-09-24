@@ -89,6 +89,10 @@ class GlueStack(Stack):
                 "--output_bucket": data_bucket.bucket_name,
                 "--output_key": "processed/chunks.jsonl",
                 "--claude_model_id": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                # Empty by default - "" means full mode (scan DynamoDB).
+                # The daily refresh state machine overrides this to a
+                # delta-reviews S3 key to switch into delta mode.
+                "--reviews_input_key": "",
             },
         )
 
@@ -167,6 +171,24 @@ class GlueStack(Stack):
                 "--index_name": "product_images",
             },
             timeout_minutes=90,
+        )
+
+        self.load_delta_reviews_job = self._python_shell_job(
+            "LoadDeltaReviewsJob",
+            job_name="rag-ecommerce-load-delta-reviews",
+            script_path=REPO_ROOT / "infra/glue_scripts/load_delta_reviews.py",
+            default_arguments={
+                "--additional-python-modules": "requests,huggingface_hub",
+                "--products_table": products_table.table_name,
+                "--reviews_table": reviews_table.table_name,
+                "--output_bucket": data_bucket.bucket_name,
+                "--output_key": "processed/delta/reviews.jsonl",
+                # Small and bounded, spread across many products - a daily
+                # delta, not a reprocessing pass. See docs/designs/
+                # 01-ingestion-pipeline.md, "Simulating refresh cadence".
+                "--max_new_reviews": "200",
+                "--max_new_reviews_per_product": "1",
+            },
         )
 
     def _python_shell_job(

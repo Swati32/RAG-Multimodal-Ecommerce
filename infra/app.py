@@ -6,6 +6,7 @@ import aws_cdk as cdk
 from stacks.agents_stack import AgentsStack
 from stacks.data_stack import DataStack
 from stacks.glue_stack import GlueStack
+from stacks.refresh_stack import RefreshStack
 from stacks.search_stack import SearchStack
 
 app = cdk.App()
@@ -17,7 +18,7 @@ env = cdk.Environment(
 
 data_stack = DataStack(app, "RagEcommerce-Data", env=env)
 search_stack = SearchStack(app, "RagEcommerce-Search", env=env)
-GlueStack(
+glue_stack = GlueStack(
     app,
     "RagEcommerce-Glue",
     data_bucket=data_stack.data_bucket,
@@ -27,6 +28,8 @@ GlueStack(
     search_domain=search_stack.domain,
     env=env,
 )
+refresh_stack = RefreshStack(app, "RagEcommerce-Refresh", env=env)
+refresh_stack.add_dependency(glue_stack)
 AgentsStack(
     app,
     "RagEcommerce-Agents",

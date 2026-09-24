@@ -95,15 +95,19 @@ Run via `start-job-run`, `SUCCEEDED` in 104s: **19,458 edges** (5,000 `BELONGS_T
 
 Rather than one bulk load, the dataset is split so the pipeline runs as a recurring process, the way it would in production:
 
-- **Initial load**: full catalog + all reviews up to a cutoff date (the dataset carries real review timestamps, so this is a natural date split)
-- **Delta batches**: reviews partitioned into monthly/weekly slices from the cutoff onward, each fed through the same pipeline as its own run
+- **Initial load**: full catalog + a small, bounded slice of reviews per product (`rag-ecommerce-load-dataset`, already covered above)
+- **Delta batches**: reviews not yet loaded, for products already in the catalog, each fed through the same downstream pipeline as its own run
 
-Each delta run exercises the pipeline as *updates*, not just inserts:
-- DynamoDB: upsert by `product_id`
-- OpenSearch: document upsert by chunk id — only the delta's chunks go through re-embedding, keeping cost proportional to what changed
-- DynamoDB graph edges: conditional writes (put only if the exact edge doesn't already exist), so replaying a delta batch never duplicates edges
+**Deviation from the original design**, simplified deliberately, not forced: the plan was calendar-based partitioning ("monthly/weekly slices from a cutoff date"). Built instead: `rag-ecommerce-load-delta-reviews` (`infra/glue_scripts/load_delta_reviews.py`) re-streams the dataset each run and selects up to `--max_new_reviews` (200) reviews, capped at `--max_new_reviews_per_product` (1), for any `(product_id, review_id)` pair not already in DynamoDB — using `src/ingestion/delta_reviews.py`'s `select_new_reviews`, a pure, unit-tested function. This achieves the same effect (bounded, incremental, real new data each run, spread across many products rather than piling onto a few) without needing to bucket the dataset's timestamps into artificial calendar weeks that wouldn't be especially meaningful at this dataset's scale anyway — correctness here doesn't depend on the calendar framing, only on not reloading anything already present, which the id check already guarantees regardless of real timestamp values.
 
-**Trigger**: an EventBridge scheduled rule running once daily, invoking the Step Functions execution for the next delta partition — a live cadence rather than a manual one, so the system continuously demonstrates ingesting updates without someone kicking off each run.
+Each delta run exercises the downstream pipeline as *updates*, not just inserts — `chunk_and_summarize.py`'s new delta mode (`--reviews_input_key` set) chunks only the new reviews, not the whole catalog:
+- DynamoDB: `upsert_review` (already idempotent — unchanged for delta use)
+- OpenSearch: document upsert by chunk id via `load_opensearch.py`, pointed at delta-specific S3 keys (`processed/delta/*.jsonl`) instead of the full-corpus ones — only the delta's chunks go through re-embedding, keeping cost proportional to what changed
+- DynamoDB graph edges: **full rebuild every run, not conditional/incremental writes** — a further, deliberate simplification of the original plan. `build_graph_edges.py`'s `put_item` upserts are already idempotent, and a full rebuild finishes in ~100s for the whole 5,000-product catalog (see the graph-edges backfill above) — cheap enough that incremental edge-diffing isn't worth the added complexity, unlike the embedding stage where reprocessing everything really would be wasteful.
+
+**Trigger**: an EventBridge rule (`events.Schedule.rate(Duration.days(1))`, `infra/stacks/refresh_stack.py`) targeting the Step Functions state machine directly — no Lambda glue code needed, CDK's `SfnStateMachine` target wires the `states:StartExecution` permission automatically. A live cadence rather than a manual one, so the system continuously demonstrates ingesting updates without someone kicking off each run. Confirmed this isn't just a config no-op: `rate()` schedules fire once immediately on rule creation in addition to the recurring interval, so the very first execution happened automatically within seconds of deploying, not on a mocked or manually-triggered run — see [PROGRESS.md](../PROGRESS.md) for the real result.
+
+**Step Functions state machine** (`rag-ecommerce-daily-refresh`) sequences stages 2-5 for delta runs — not stage 1, the one-time initial load — via `aws_stepfunctions_tasks.GlueStartJobRun` with `IntegrationPattern.RUN_JOB` (the `.sync` integration, so each stage genuinely waits for the previous Glue job to finish, not fire-and-forget): `LoadDeltaReviews → ChunkDeltaReviews → EmbedDeltaChunks → LoadDeltaIntoOpenSearch → RebuildGraphEdges`. Each Glue task's `Arguments` override just the S3 keys that need to point at delta-specific paths instead of the full-corpus defaults — no job-level code duplication between the full-load and delta-run usages of `chunk_and_summarize`/`embed_chunks`/`load_opensearch`.
 
 This also gives a concrete staleness test: run two delta batches with a co-purchase signal that changes between them, and confirm the graph and search index both reflect the newer state.
 
@@ -118,4 +122,4 @@ The dataset's ASIN is used as `product_id` everywhere (DynamoDB key, OpenSearch 
 
 ## Status
 
-In progress — steps 1-5 (download, normalize, chunk + summarize, embed, index) plus the graph builder implemented as real Glue jobs, deployed, and run end-to-end: 5,000 products, 10,313 reviews, 20,339 chunks indexed in OpenSearch with real embeddings, 19,458 graph edges in DynamoDB. Step Functions orchestration and the daily refresh trigger not yet built. See [../PROGRESS.md](../PROGRESS.md)
+**Complete.** All steps (download, normalize, chunk + summarize, embed, index, graph edges, image embeddings) implemented as real Glue jobs, deployed, and run end-to-end. Step Functions orchestration and the daily EventBridge refresh trigger are also built and deployed (`RagEcommerce-Refresh`) — the schedule's first automatic execution succeeded for real within seconds of deployment (not a manual/mocked test), and verified counts before vs. after confirm the delta actually landed: DynamoDB reviews 10,313 → 10,513, OpenSearch `chunks` 20,339 → 20,539, `GraphEdges` 19,458 → 19,476. See [../PROGRESS.md](../PROGRESS.md).
