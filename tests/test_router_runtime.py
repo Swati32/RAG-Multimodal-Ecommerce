@@ -180,6 +180,14 @@ def test_invoke_runs_the_full_pipeline_to_a_verified_cited_answer(arn_env, produ
     chunk_events = [event for event in events if event["type"] == "answer_chunk"]
     assert [event["text"] for event in chunk_events] == ["The Acme headphones have ", "great sound. [[P2]]"]
 
+    # trace exposes what each pipeline stage actually did - see
+    # frontend/src/PipelineTrace.tsx, which renders this
+    trace = response["trace"]
+    assert trace["dispatch_decision"] == {"search_agent": True, "graph_agent": False, "lookup_agent": False, "image_agent": False}
+    assert trace["specialists"] == {"search_agent": {"result_count": 2, "timed_out": False}}
+    assert trace["consolidation"] == {"candidate_count": 2, "ranked_count": 2}
+    assert trace["citations"] == {"drafted": 1, "verified": 1}
+
 
 def test_invoke_never_dispatches_image_agent_without_an_uploaded_image(arn_env, monkeypatch):
     bedrock = StubBedrockClient(['{"search_agent": false, "graph_agent": false, "lookup_agent": false, "image_agent": true}'])
@@ -219,6 +227,8 @@ def test_invoke_degrades_gracefully_when_one_specialist_times_out(arn_env, produ
     assert set(agentcore.invoked_arns) == {"arn:search", "arn:graph"}
     assert response["answer"] == "The Acme headphones have great sound."
     assert response["citations"][0]["product_id"] == "P2"
+    assert response["trace"]["specialists"]["graph_agent"]["timed_out"] is True
+    assert response["trace"]["specialists"]["search_agent"] == {"result_count": 1, "timed_out": False}
 
 
 def test_invoke_skips_consolidation_and_generation_when_dispatch_found_nothing(arn_env, monkeypatch):

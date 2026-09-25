@@ -13,10 +13,23 @@ export interface Citation {
   snippet: string;
 }
 
+export interface SpecialistTrace {
+  result_count: number;
+  timed_out: boolean;
+}
+
+export interface Trace {
+  dispatch_decision: Record<string, boolean>;
+  specialists: Record<string, SpecialistTrace>;
+  consolidation: { candidate_count: number; ranked_count: number } | null;
+  citations: { drafted: number; verified: number } | null;
+}
+
 export interface QueryResponse {
   answer: string;
   citations: Citation[];
   dispatched: string[];
+  trace: Trace | null;
 }
 
 interface PresignedPost {

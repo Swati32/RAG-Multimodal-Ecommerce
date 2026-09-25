@@ -36,12 +36,34 @@ def test_collect_final_response_parses_the_terminal_event_from_a_real_shaped_sse
     raw = (
         b'data: {"type": "answer_chunk", "text": "It has "}\n\n'
         b'data: {"type": "answer_chunk", "text": "great sound."}\n\n'
-        b'data: {"type": "final", "answer": "It has great sound.", "citations": [{"product_id": "P1"}], "dispatched": ["search_agent"]}\n\n'
+        b'data: {"type": "final", "answer": "It has great sound.", "citations": [{"product_id": "P1"}], "dispatched": ["search_agent"], '
+        b'"trace": {"dispatch_decision": {"search_agent": true}, "specialists": {"search_agent": {"result_count": 1, "timed_out": false}}, '
+        b'"consolidation": {"candidate_count": 1, "ranked_count": 1}, "citations": {"drafted": 1, "verified": 1}}}\n\n'
     )
 
     result = collect_final_response(raw)
 
-    assert result == {"answer": "It has great sound.", "citations": [{"product_id": "P1"}], "dispatched": ["search_agent"]}
+    assert result == {
+        "answer": "It has great sound.",
+        "citations": [{"product_id": "P1"}],
+        "dispatched": ["search_agent"],
+        "trace": {
+            "dispatch_decision": {"search_agent": True},
+            "specialists": {"search_agent": {"result_count": 1, "timed_out": False}},
+            "consolidation": {"candidate_count": 1, "ranked_count": 1},
+            "citations": {"drafted": 1, "verified": 1},
+        },
+    }
+
+
+def test_collect_final_response_defaults_trace_to_none_when_absent():
+    """Backward-compat: an older router without the trace field shouldn't
+    break this API - trace is informational, not required."""
+    raw = b'data: {"type": "final", "answer": "ok", "citations": [], "dispatched": []}\n\n'
+
+    result = collect_final_response(raw)
+
+    assert result["trace"] is None
 
 
 def test_collect_final_response_raises_if_the_stream_never_produces_a_final_event():

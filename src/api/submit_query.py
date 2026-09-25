@@ -43,5 +43,10 @@ def collect_final_response(raw_body: bytes) -> dict:
             continue
         event = json.loads(block[len("data:") :].strip())
         if event.get("type") == "final":
-            return {"answer": event["answer"], "citations": event["citations"], "dispatched": event["dispatched"]}
+            return {
+                "answer": event["answer"],
+                "citations": event["citations"],
+                "dispatched": event["dispatched"],
+                "trace": event.get("trace"),
+            }
     raise ValueError("Router response stream ended without a final event")

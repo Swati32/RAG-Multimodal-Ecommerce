@@ -112,6 +112,12 @@ def invoke(payload: dict):
     to_dispatch = [name for name, should_dispatch in dispatch_decision.items() if should_dispatch]
 
     candidates: list[dict] = []
+    # Per-specialist detail for the trace exposed to the client (see
+    # frontend/src/PipelineTrace.tsx) - kept separate from the flat
+    # `candidates` list the rest of the pipeline actually uses, since
+    # dedupe/consolidation genuinely don't care which specialist a
+    # candidate came from, only the UI does.
+    specialist_trace: dict[str, dict] = {name: {"result_count": 0, "timed_out": False} for name in to_dispatch}
     if to_dispatch:
         with ThreadPoolExecutor(max_workers=len(to_dispatch)) as pool:
             futures = {
@@ -122,12 +128,15 @@ def invoke(payload: dict):
             }
             for name, future in futures.items():
                 try:
-                    candidates.extend(future.result())
+                    specialist_results = future.result()
+                    candidates.extend(specialist_results)
+                    specialist_trace[name]["result_count"] = len(specialist_results)
                 except (ReadTimeoutError, ConnectTimeoutError):
                     # One specialist hanging shouldn't fail the whole
                     # request - proceed with whatever the others returned,
                     # per design doc 04's "Retry/fallback".
                     app.logger.warning("Specialist %s timed out, proceeding without it", name)
+                    specialist_trace[name]["timed_out"] = True
 
     if not candidates:
         answer = (
@@ -135,18 +144,22 @@ def invoke(payload: dict):
             if to_dispatch
             else "I couldn't determine which part of the catalog applies to this question."
         )
-        yield {"type": "final", "answer": answer, "citations": [], "dispatched": to_dispatch}
+        trace = {"dispatch_decision": dispatch_decision, "specialists": specialist_trace, "consolidation": None, "citations": None}
+        yield {"type": "final", "answer": answer, "citations": [], "dispatched": to_dispatch, "trace": trace}
         return
 
     ranked_product_ids = run_consolidation(_bedrock, question, candidates, image_bytes=image_bytes, image_format=image_format)
     results = dedupe_and_rank(candidates, ranked_product_ids)
+    consolidation_trace = {"candidate_count": len(candidates), "ranked_count": len(results)}
 
     if not results:
+        trace = {"dispatch_decision": dispatch_decision, "specialists": specialist_trace, "consolidation": consolidation_trace, "citations": None}
         yield {
             "type": "final",
             "answer": "I found some information but none of it was actually relevant to your question.",
             "citations": [],
             "dispatched": to_dispatch,
+            "trace": trace,
         }
         return
 
@@ -159,7 +172,9 @@ def invoke(payload: dict):
     verified_citations = verify_citations(_bedrock, VERIFIER_MODEL_ID, raw_citations, results)
     resolved_citations = resolve_citations(_dynamodb.Table(os.environ["PRODUCTS_TABLE"]), verified_citations)
 
-    yield {"type": "final", "answer": clean_answer, "citations": resolved_citations, "dispatched": to_dispatch}
+    citations_trace = {"drafted": len(raw_citations), "verified": len(resolved_citations)}
+    trace = {"dispatch_decision": dispatch_decision, "specialists": specialist_trace, "consolidation": consolidation_trace, "citations": citations_trace}
+    yield {"type": "final", "answer": clean_answer, "citations": resolved_citations, "dispatched": to_dispatch, "trace": trace}
 
 
 if __name__ == "__main__":

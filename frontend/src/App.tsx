@@ -1,6 +1,7 @@
 import { Fragment, useRef, useState } from "react";
 import "./App.css";
 import { submitQuery, type QueryResponse } from "./api";
+import { PipelineTrace } from "./PipelineTrace";
 
 const ACCEPTED_IMAGE_TYPES = "image/jpeg,image/png,image/webp";
 
@@ -99,9 +100,7 @@ function App() {
         <section className="result">
           <p className="answer">{renderWithBold(result.answer)}</p>
 
-          {result.dispatched.length > 0 && (
-            <p className="dispatched">Consulted: {result.dispatched.join(", ")}</p>
-          )}
+          {result.trace && <PipelineTrace trace={result.trace} />}
 
           {result.citations.length > 0 && (
             <div className="citations">
