@@ -1,0 +1,36 @@
+<mxGraphModel dx="1000" dy="700" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="820" pageHeight="620" math="0" shadow="0">
+  <root>
+    <mxCell id="0" />
+    <mxCell id="1" parent="0" />
+
+    <mxCell id="n_cat" value="category#All Beauty" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+      <mxGeometry x="310" y="40" width="200" height="60" as="geometry" />
+    </mxCell>
+
+    <mxCell id="n_brand" value="brand#Acme" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+      <mxGeometry x="30" y="270" width="200" height="60" as="geometry" />
+    </mxCell>
+
+    <mxCell id="n_p1" value="product#P1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#82B366;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+      <mxGeometry x="310" y="270" width="200" height="60" as="geometry" />
+    </mxCell>
+
+    <mxCell id="n_p2" value="product#P2" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#82B366;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+      <mxGeometry x="590" y="270" width="200" height="60" as="geometry" />
+    </mxCell>
+
+    <mxCell id="e1" value="BELONGS_TO / HAS_PRODUCT" style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=11;startArrow=block;endArrow=block;startFill=1;endFill=1;labelBackgroundColor=#ffffff;exitX=0.5;exitY=0;entryX=0.5;entryY=1;" edge="1" parent="1" source="n_p1" target="n_cat">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+    <mxCell id="e2" value="HAS_BRAND / HAS_PRODUCT" style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=11;startArrow=block;endArrow=block;startFill=1;endFill=1;labelBackgroundColor=#ffffff;exitX=0;exitY=0.5;entryX=1;entryY=0.5;" edge="1" parent="1" source="n_p1" target="n_brand">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+    <mxCell id="e3" value="CO_REVIEWED_WITH&#10;(symmetric, 1 hop)" style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=11;startArrow=block;endArrow=block;startFill=1;endFill=1;dashed=1;labelBackgroundColor=#ffffff;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="n_p1" target="n_p2">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+    <mxCell id="n_legend" value="Every edge is written in both directions at ingestion time (DynamoDB adjacency-list, not a graph database).&#10;same_brand / same_category traversal = 2 hops (product to Brand/Category node to a sibling product).&#10;co_reviewed = 1 hop (written product-to-product directly)." style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;strokeColor=none;fontSize=12;fontColor=#666666;align=left;" vertex="1" parent="1">
+      <mxGeometry x="30" y="420" width="760" height="60" as="geometry" />
+    </mxCell>
+  </root>
+</mxGraphModel>

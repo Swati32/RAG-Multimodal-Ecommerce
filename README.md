@@ -12,59 +12,9 @@ Every architectural decision below was either forced by a real constraint hit ag
 
 ## System architecture
 
-```mermaid
-%%{init: {'flowchart': {'curve': 'linear'}}}%%
-flowchart TB
-    subgraph Client
-        FE["Frontend<br/>React SPA on S3 + CloudFront"]
-    end
+![System architecture: client, upload API, agent runtime, data/search layer, and the ingestion/refresh stack, with DynamoDB split into Products/Reviews and Knowledge Graph tables](docs/diagrams/architecture.svg)
 
-    subgraph API["RagEcommerce-Upload"]
-        APIGW[API Gateway HTTP API]
-        PRESIGN["Lambda: presign-upload"]
-        SUBMIT["Lambda: submit-query"]
-    end
-
-    subgraph Agents["RagEcommerce-Agents — Bedrock AgentCore Runtime"]
-        RTR[Router]
-        SRCH[SearchAgent]
-        IMG[ImageAgent]
-        GRF[GraphAgent]
-        LKP[LookupAgent]
-    end
-
-    subgraph Data["RagEcommerce-Data / RagEcommerce-Search"]
-        DDB[(DynamoDB<br/>Products, Reviews, GraphEdges)]
-        OS[(OpenSearch<br/>chunks + product_images)]
-        S3Q[(S3: query-images/)]
-    end
-
-    subgraph Ingestion["RagEcommerce-Glue + RagEcommerce-Refresh"]
-        SF[Step Functions]
-        GLUE[Glue jobs]
-        EB[EventBridge: daily]
-    end
-
-    FE -->|photo, presigned POST| S3Q
-    FE -->|prompt + object_key| APIGW
-    APIGW --> PRESIGN --> S3Q
-    APIGW --> SUBMIT
-    SUBMIT -->|InvokeAgentRuntime| RTR
-    RTR <-->|parallel, only relevant ones| SRCH
-    RTR <-->|parallel, only relevant ones| IMG
-    RTR <-->|parallel, only relevant ones| GRF
-    RTR <-->|parallel, only relevant ones| LKP
-    SRCH <--> OS
-    IMG <--> OS
-    GRF <--> DDB
-    LKP <--> DDB
-    RTR -->|stream_answer + verify_citations| DDB
-    RTR -->|SSE stream| SUBMIT --> FE
-
-    EB --> SF --> GLUE
-    GLUE --> DDB
-    GLUE --> OS
-```
+The DynamoDB node is split into two tables to make the graph's role explicit: **Products/Reviews** (structured metadata) and **Knowledge Graph** (the `GraphEdges` adjacency-list GraphAgent traverses) — both real DynamoDB, not Neptune (see [Knowledge graph construction](#knowledge-graph-construction)). The dashed edge is the answer's SSE stream back through `submit-query` to the browser.
 
 **Tech stack**
 
@@ -123,26 +73,7 @@ Reviews are a first-class retrieval source, not an afterthought, at three separa
 
 ## Ingestion pipeline
 
-```mermaid
-%%{init: {'flowchart': {'curve': 'linear'}}}%%
-flowchart TD
-    A[Hugging Face: Amazon Reviews 2023] -->|streamed, no full download| B["load-dataset<br/>Glue Python Shell"]
-    B --> C[(DynamoDB: Products, Reviews)]
-    B --> D["chunk-and-summarize<br/>sentence-aware, Claude summarizes long reviews first"]
-    D --> E["embed-chunks<br/>Titan Text Embeddings V2, real-time, rate-limited"]
-    E --> F["load-opensearch<br/>bulk index"]
-    F --> G[(OpenSearch: chunks index)]
-    C --> H["build-graph-edges<br/>category + brand + co-reviewed"]
-    H --> I[(DynamoDB: GraphEdges)]
-    C --> J["embed-images<br/>Cohere Embed v4, one per product"]
-    J --> K["load-images<br/>bulk index"]
-    K --> L[(OpenSearch: product_images index)]
-
-    M[EventBridge: daily] --> N[Step Functions: daily-refresh]
-    N --> O["load-delta-reviews<br/>next N unseen reviews/product"]
-    O --> D
-    N --> H
-```
+![Ingestion pipeline: Hugging Face dataset loaded via Glue into DynamoDB, then branching into chunk/embed/index, graph-edge, and image-embedding paths, with a daily EventBridge-triggered delta refresh](docs/diagrams/ingestion-pipeline.svg)
 
 A Step Functions state machine sequences the core stages; a **daily EventBridge schedule** triggers a real delta-refresh cadence on top of the one-time initial load — not a single bulk import. Each delta run re-streams the dataset, selects up to 200 not-yet-loaded reviews (capped at 1 per product) via a pure, unit-tested selection function, and pushes them through the same chunk → embed → index pipeline as new data, then rebuilds the graph edges. Verified with a real, *unprompted* execution (EventBridge `rate()` rules fire once immediately on creation) that moved real numbers: **DynamoDB reviews 10,313 → 10,513**, **OpenSearch `chunks` 20,339 → 20,539**, **`GraphEdges` 19,458 → 19,476**.
 
@@ -156,16 +87,7 @@ Full detail: [design doc 01](docs/designs/01-ingestion-pipeline.md).
 
 ## Knowledge graph construction
 
-```mermaid
-%%{init: {'flowchart': {'curve': 'linear'}}}%%
-flowchart LR
-    P["product#P1"] -->|BELONGS_TO| C["category#All Beauty"]
-    C -->|HAS_PRODUCT| P
-    P -->|HAS_BRAND| B["brand#Acme"]
-    B -->|HAS_PRODUCT| P
-    P -->|CO_REVIEWED_WITH| P2["product#P2"]
-    P2 -->|CO_REVIEWED_WITH| P
-```
+![Knowledge graph: product#P1 connected to category#All Beauty, brand#Acme, and a co-reviewed product#P2, each edge written bidirectionally](docs/diagrams/knowledge-graph.svg)
 
 No Neptune: a real deploy attempt failed outright (`CREATE_FAILED`, this account's plan doesn't support it — only `aurora-postgresql`), and the graph queries this system actually needs (1–2 hop lookups: "same brand," "same category," "co-reviewed") don't justify a second stateful graph database anyway. The graph lives as a **DynamoDB adjacency-list**: one table, partition key `node` (`"product#P1"`, `"brand#Acme"`, `"category#All Beauty"`), sort key `edge` (`"HAS_BRAND#brand#Acme"`). Every relationship is written in both directions at ingestion time, so **every traversal GraphAgent needs is a single-partition `Query`** — no GSI, no second index to keep in sync, no multi-hop fan-out.
 
@@ -183,36 +105,7 @@ Full detail: [design doc 01](docs/designs/01-ingestion-pipeline.md#graph-storage
 
 ## Multi-agent retrieval, ranking & generation
 
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant API as API Gateway + Lambda
-    participant RTR as Router
-    participant SP as Specialists<br/>(Search / Graph / Lookup / Image)
-    participant GEN as Generator (Sonnet 4.5)
-    participant VER as Verifier (Haiku 4.5)
-
-    U->>API: question (+ optional photo)
-    API->>RTR: InvokeAgentRuntime
-    RTR->>RTR: routing decision (Haiku, JSON)
-    alt Graph/Lookup needed but no explicit id given
-        RTR->>SP: resolve a product_id via SearchAgent first
-        SP-->>RTR: candidates + resolved id
-    end
-    par only the relevant specialists, in parallel
-        RTR->>SP: dispatch (ThreadPoolExecutor)
-    end
-    SP-->>RTR: structured results (not prose)
-    RTR->>RTR: LLM-judged consolidation + rank *reason* (Haiku, JSON)
-    RTR->>RTR: deterministic dedupe by product_id
-    RTR->>GEN: stream_answer (plain text, [[product_id]] markers)
-    GEN-->>API: SSE: answer_chunk events
-    RTR->>VER: verify each citation against its real source record
-    VER-->>RTR: grounded / not grounded
-    RTR->>RTR: resolve_citations (title, image, brand, reviews, rank reason)
-    RTR-->>API: SSE: final event (answer + citations)
-    API-->>U: streamed answer + citation cards
-```
+![UML sequence diagram: User through API Gateway/Lambda to Router, which resolves an id via Specialists if needed, dispatches the relevant specialists in parallel, consolidates and ranks results, streams the generated answer via SSE, and verifies each citation before the final event](docs/diagrams/sequence-flow.svg)
 
 **Consolidation is split into two mechanisms on purpose**, not one: the four specialists return results on *incomparable scales* (an OpenSearch relevance score, a k-NN similarity score, a graph edge with no score at all, a direct lookup with no ranking at all) — so *ranking* is a judgment call handed to an LLM (with a **stated reason per product**, not just a bare order — the "why this rank" text shown on every card), while *deduplication* (the same product surfacing from two specialists) is an exact-match check on `product_id`, done deterministically in code, since LLMs aren't reliable at exhaustively deduping a list by exact key.
 
@@ -319,6 +212,14 @@ npx cdk destroy --all  # tear down between work sessions — see the cost discip
 - [06 — Frontend Hosting](docs/designs/06-frontend-hosting.md)
 
 See [docs/PROGRESS.md](docs/PROGRESS.md) for full implementation status, real verification results, and every gotcha hit along the way.
+
+## Future experiments
+
+Planned, not yet run — logged here so scope stays explicit rather than implied:
+
+- **Dispatch strategy comparison**: the router currently classifies a query, then dispatches only the specialists it judges relevant, in parallel. Compare against always-running all four specialists in parallel regardless of classification, and against a sequential chain — measured on latency, Bedrock spend, and answer quality (recall + grounding) against the same query set the production eval already uses.
+- **ID-resolution handoff patterns**: the current fix for GraphAgent/LookupAgent needing an exact product id (see [Known limitations](#known-limitations) history and [PROGRESS.md](docs/PROGRESS.md)) is to have the router run SearchAgent first to resolve an id from a description. Compare that against alternatives — GraphAgent/LookupAgent doing their own fuzzy name lookup, or the router always pre-resolving an id up front regardless of whether one is already present — on a query set specifically phrased the way real shoppers describe products (by attribute, not by id).
+- **Result fusion/ranking methods**: the current consolidation step uses an LLM-judged ranking over the union of specialist results. Compare against reciprocal rank fusion and simple normalized-score averaging, scored through the same independent-judge harness used in [Experiment 06](docs/experiments/06-production-eval.md) (currently 85% recall / 45% grounding baseline).
 
 ## Known limitations
 
