@@ -5,6 +5,7 @@ import aws_cdk as cdk
 
 from stacks.agents_stack import AgentsStack
 from stacks.data_stack import DataStack
+from stacks.frontend_stack import FrontendStack
 from stacks.glue_stack import GlueStack
 from stacks.observability_stack import ObservabilityStack
 from stacks.refresh_stack import RefreshStack
@@ -66,5 +67,7 @@ observability_stack = ObservabilityStack(
     env=env,
 )
 observability_stack.add_dependency(upload_stack)
+
+FrontendStack(app, "RagEcommerce-Frontend", env=env)
 
 app.synth()

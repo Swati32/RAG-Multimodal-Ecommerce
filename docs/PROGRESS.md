@@ -9,7 +9,7 @@ Tracks implementation status per workflow. Update this file as each workflow mov
 | Image Upload & Multimodal Query | [03](designs/03-image-upload.md) | [src/api](../src/api), [infra/stacks/upload_stack.py](../infra/stacks/upload_stack.py) | Complete |
 | Inference Serving | [04](designs/04-inference-serving.md) | [src/agents/bedrock_client.py](../src/agents/bedrock_client.py) | Complete |
 | Observability & Cost Controls | [05](designs/05-observability-cost.md) | [infra/stacks/observability_stack.py](../infra/stacks/observability_stack.py), [scripts/eval](../scripts/eval) | Complete |
-| Frontend Hosting | [06](designs/06-frontend-hosting.md) | — | Not started |
+| Frontend Hosting | [06](designs/06-frontend-hosting.md) | [frontend](../frontend), [infra/stacks/frontend_stack.py](../infra/stacks/frontend_stack.py) | Complete |
 
 ## Ingestion & Refresh Pipeline — what's done
 
@@ -128,6 +128,12 @@ Workflow 02 (Retrieval Agents & Query Orchestration) is now functionally complet
 
 **Evaluation framework built and run for real** — `scripts/eval/run_production_eval.py`: 20 synthetic queries (scoped down from the design's 50-100 hand-labeled pairs, flagged explicitly) run through the *actual deployed* query API end-to-end, scored by an independent judge call that never sees the production system's own verifier, publishing real custom metrics to CloudWatch under `RAGEcommerce/Eval`. Real results: 85% recall (the system finds the right product most of the time, and honestly declines rather than hallucinating when it can't), but only 45% of answers scored predominantly grounded by the independent judge — a genuine finding that citation snippets (introduced in workflow 04's streaming rework) are self-referential, restating the generator's own claim rather than quoting the underlying record, which no individual workflow's own live-verification step had caught. See [Experiment 06](experiments/06-production-eval.md) for the full method, results, and the concrete (not-yet-implemented) fix this points to.
 
+## Frontend Hosting — what's done
+
+**Done for real, deployed and verified live — workflow 06 is now complete, and the project is usable end-to-end through a real browser.** `RagEcommerce-Frontend`: a React + TypeScript SPA (Vite) - one page, a prompt box, an optional image picker with preview, and a results area with citation cards - calling the workflow 03 API directly from the browser (presigned S3 upload, then `/query`). Hosted on a private S3 bucket behind CloudFront with Origin Access Control (no public bucket access, matching the project's existing security posture), deployed via `BucketDeployment` from a locally-built `frontend/dist`.
+
+Verified live against the real deployed CloudFront URL, not just localhost: real HTTPS, a real grounded/cited answer for an in-catalog query, and a real honest "none of it was actually relevant" decline for an intentionally off-catalog one (the same behavior already verified at the agent level, now confirmed through the actual UI). One flagged gap: the image-upload UI path is verified by code (identical API calls to workflow 03's already-proven flow) and visually confirmed to render/respond, but not fully browser-automated end-to-end, since headless browser tooling can't drive a native OS file-picker dialog - closing this needs a real user's manual test. See [06](designs/06-frontend-hosting.md#implementation-notes) for the full story.
+
 ## Infrastructure (`infra/`)
 
 **Resolved: AWS CDK (Python)** — one language across app code and infra, rather than adding Terraform/HCL as a second one.
@@ -145,6 +151,7 @@ Workflow 02 (Retrieval Agents & Query Orchestration) is now functionally complet
 | `RagEcommerce-Agents` | LookupAgent + SearchAgent + GraphAgent + ImageAgent + Router (Bedrock AgentCore Runtime, ARM64 containers, CDK-built/pushed images) | `CREATE_COMPLETE`, all five runtimes `READY`, each verified via real invocations |
 | `RagEcommerce-Upload` | HTTP API + 2 Lambdas (presign-upload, submit-query; shared ARM64 Docker image, `query-images/` S3 prefix) | `CREATE_COMPLETE`, both routes verified live (real upload, real size/type rejection, real self-match query) |
 | `RagEcommerce-Observability` | AWS Budget ($100/mo) + SNS alerts topic, CloudWatch dashboard (`rag-ecommerce`) + 3 alarms | `CREATE_COMPLETE`, budget/dashboard/alarms confirmed live, email subscription pending confirmation |
+| `RagEcommerce-Frontend` | Private S3 bucket + CloudFront (OAC) serving the React SPA | `CREATE_COMPLETE`, verified live at `https://d1vjoz7ow6cljs.cloudfront.net` |
 
 Not deployed: nothing else — `RagEcommerce-Graph` (Neptune) was deleted, see above.
 
@@ -159,6 +166,7 @@ Every resource uses `RemovalPolicy.DESTROY` so `cdk destroy` fully tears the sta
 - **Citation grounding rate**: measured for real in [Experiment 06](experiments/06-production-eval.md) (0.45) - lower than it should be, because `extract_citations`' snippet restates the generator's own claim rather than quoting the underlying record. Concrete fix identified but not yet implemented: have `resolve_citations` substitute a genuine excerpt from the product's own record for the snippet field, since it already does a real DynamoDB lookup per citation
 - **Chunk granularity ("small-to-big")** ([02](designs/02-retrieval-agents.md#indexing-strategy)): still an open, reasoned-but-unvalidated decision - needs a dedicated experiment run through [Experiment 06](experiments/06-production-eval.md)'s harness once it exists as an alternate `AgentConfig` to compare against
 - **Eval set scale**: [Experiment 06](experiments/06-production-eval.md) ran 20 synthetically-labeled queries, not the design's 50-100 hand-labeled pairs - the harness scales mechanically, just needs the added Bedrock spend/rating effort to be worth it
+- **Frontend image-upload flow, manual verification needed**: the SPA's image-upload path is verified by code (calls the same presigned-POST-then-`/query` sequence workflow 03 already proved live) and visually confirmed to render/respond, but not driven end-to-end by browser automation - headless tooling can't operate a native OS file-picker dialog. A real user selecting a real photo through `https://d1vjoz7ow6cljs.cloudfront.net` and confirming a grounded, cited answer comes back would close this
 
 ## Suggested build order
 
