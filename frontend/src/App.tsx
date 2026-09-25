@@ -61,35 +61,36 @@ function App() {
       </header>
 
       <form className="query-form" onSubmit={handleSubmit}>
-        <textarea
-          value={prompt}
-          onChange={(event) => setPrompt(event.target.value)}
-          placeholder="e.g. gentle moisturizer for sensitive skin under $15"
-          rows={2}
-        />
-
-        <div className="form-row">
-          <label className="file-picker">
-            {image ? "Change photo" : "Add a photo"}
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept={ACCEPTED_IMAGE_TYPES}
-              onChange={(event) => handleImageChange(event.target.files?.[0] ?? null)}
-            />
-          </label>
-          {imagePreviewUrl && (
+        <div className="input-row">
+          {imagePreviewUrl ? (
             <div className="image-preview">
               <img src={imagePreviewUrl} alt="Upload preview" />
               <button type="button" onClick={clearImage} aria-label="Remove photo">
                 &times;
               </button>
             </div>
+          ) : (
+            <label className="file-picker" aria-label="Add a photo">
+              <span aria-hidden="true">+</span>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept={ACCEPTED_IMAGE_TYPES}
+                onChange={(event) => handleImageChange(event.target.files?.[0] ?? null)}
+              />
+            </label>
           )}
-          <button type="submit" disabled={loading || (!prompt.trim() && !image)} className="submit-button">
-            {loading ? "Thinking…" : "Ask"}
-          </button>
+          <textarea
+            value={prompt}
+            onChange={(event) => setPrompt(event.target.value)}
+            placeholder="e.g. gentle moisturizer for sensitive skin under $15"
+            rows={2}
+          />
         </div>
+
+        <button type="submit" disabled={loading || (!prompt.trim() && !image)} className="submit-button">
+          {loading ? "Thinking…" : "Ask"}
+        </button>
       </form>
 
       {error && <div className="error">{error}</div>}

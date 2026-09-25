@@ -32,6 +32,7 @@ h1 {
 }
 
 textarea {
+  flex: 1;
   font-family: inherit;
   font-size: 1rem;
   padding: 0.75rem;
@@ -40,21 +41,25 @@ textarea {
   resize: vertical;
 }
 
-.form-row {
+.input-row {
   display: flex;
-  align-items: center;
-  gap: 1rem;
-  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 0.75rem;
 }
 
 .file-picker {
   position: relative;
   cursor: pointer;
-  font-size: 0.9rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 48px;
+  height: 48px;
+  font-size: 1.4rem;
   color: #4338ca;
   border: 1px dashed #a5a5d0;
   border-radius: 8px;
-  padding: 0.5rem 0.9rem;
 }
 
 .file-picker input {
@@ -68,6 +73,7 @@ textarea {
   position: relative;
   width: 48px;
   height: 48px;
+  flex-shrink: 0;
 }
 
 .image-preview img {
@@ -94,7 +100,7 @@ textarea {
 }
 
 .submit-button {
-  margin-left: auto;
+  align-self: flex-end;
   background: #4338ca;
   color: white;
   border: none;
