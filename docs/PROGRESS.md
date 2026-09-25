@@ -8,7 +8,7 @@ Tracks implementation status per workflow. Update this file as each workflow mov
 | Retrieval Agents & Query Orchestration | [02](designs/02-retrieval-agents.md) | [src/agents](../src/agents) | Core pipeline complete |
 | Image Upload & Multimodal Query | [03](designs/03-image-upload.md) | [src/api](../src/api), [infra/stacks/upload_stack.py](../infra/stacks/upload_stack.py) | Complete |
 | Inference Serving | [04](designs/04-inference-serving.md) | [src/agents/bedrock_client.py](../src/agents/bedrock_client.py) | Complete |
-| Observability & Cost Controls | [05](designs/05-observability-cost.md) | — | Not started |
+| Observability & Cost Controls | [05](designs/05-observability-cost.md) | [infra/stacks/observability_stack.py](../infra/stacks/observability_stack.py), [scripts/eval](../scripts/eval) | Complete |
 | Frontend Hosting | [06](designs/06-frontend-hosting.md) | — | Not started |
 
 ## Ingestion & Refresh Pipeline — what's done
@@ -122,6 +122,12 @@ Workflow 02 (Retrieval Agents & Query Orchestration) is now functionally complet
 
 **Three real bugs found and fixed via live end-to-end testing** (none caught by unit tests alone): (1) `agentcore_client`'s 20s default timeout was scoped for the router calling a specialist, not for this API's Lambda calling the *router itself* — its full pipeline genuinely runs longer, a real image query hit "stream ended without a final event" until the client got its own longer, parameterized timeout; (2) consolidation and generation were text-only even for an image-driven query, so Claude couldn't judge ImageAgent's candidates against a reference image it couldn't see — consolidation crashed with a real `JSONDecodeError` on a prose refusal, and generation independently refused once that was fixed too, both fixed by actually attaching the image to those Converse calls; (3) every downstream image content block and Cohere's embed request hardcoded `"jpeg"` regardless of the real upload, a silent mislabeling risk for the PNG/WEBP the allowlist itself promises support for — fixed by threading the real format from S3's `ContentType` end-to-end. See [03](designs/03-image-upload.md#implementation-notes) for the full story.
 
+## Observability & Cost Controls — what's done
+
+**Done for real, deployed and verified live — workflow 05 is now complete.** `RagEcommerce-Observability`: a real AWS Budget ($100/month, 80%/100% SNS-notified thresholds), an SNS alerts topic with a real (pending-confirmation) email subscription, `Project` tags across the whole app for Cost Explorer isolation, a real CloudWatch dashboard over the actual deployed resources (DynamoDB, OpenSearch, Bedrock, Step Functions, the two API Lambdas), and three real alarms (refresh-pipeline failures, Lambda errors, DynamoDB throttling) wired to the same topic. A real bug caught while building the alarms: DynamoDB table names are unresolved CDK tokens at synth time, so a substring match to auto-detect "the Reviews table" silently picked the wrong table - fixed by passing it explicitly instead of guessing.
+
+**Evaluation framework built and run for real** — `scripts/eval/run_production_eval.py`: 20 synthetic queries (scoped down from the design's 50-100 hand-labeled pairs, flagged explicitly) run through the *actual deployed* query API end-to-end, scored by an independent judge call that never sees the production system's own verifier, publishing real custom metrics to CloudWatch under `RAGEcommerce/Eval`. Real results: 85% recall (the system finds the right product most of the time, and honestly declines rather than hallucinating when it can't), but only 45% of answers scored predominantly grounded by the independent judge — a genuine finding that citation snippets (introduced in workflow 04's streaming rework) are self-referential, restating the generator's own claim rather than quoting the underlying record, which no individual workflow's own live-verification step had caught. See [Experiment 06](experiments/06-production-eval.md) for the full method, results, and the concrete (not-yet-implemented) fix this points to.
+
 ## Infrastructure (`infra/`)
 
 **Resolved: AWS CDK (Python)** — one language across app code and infra, rather than adding Terraform/HCL as a second one.
@@ -138,6 +144,7 @@ Workflow 02 (Retrieval Agents & Query Orchestration) is now functionally complet
 | `RagEcommerce-Refresh` | Step Functions state machine (`rag-ecommerce-daily-refresh`) + EventBridge daily schedule | `CREATE_COMPLETE`, first (automatic) execution `SUCCEEDED` in ~6 min |
 | `RagEcommerce-Agents` | LookupAgent + SearchAgent + GraphAgent + ImageAgent + Router (Bedrock AgentCore Runtime, ARM64 containers, CDK-built/pushed images) | `CREATE_COMPLETE`, all five runtimes `READY`, each verified via real invocations |
 | `RagEcommerce-Upload` | HTTP API + 2 Lambdas (presign-upload, submit-query; shared ARM64 Docker image, `query-images/` S3 prefix) | `CREATE_COMPLETE`, both routes verified live (real upload, real size/type rejection, real self-match query) |
+| `RagEcommerce-Observability` | AWS Budget ($100/mo) + SNS alerts topic, CloudWatch dashboard (`rag-ecommerce`) + 3 alarms | `CREATE_COMPLETE`, budget/dashboard/alarms confirmed live, email subscription pending confirmation |
 
 Not deployed: nothing else — `RagEcommerce-Graph` (Neptune) was deleted, see above.
 
@@ -149,8 +156,9 @@ Every resource uses `RemovalPolicy.DESTROY` so `cdk destroy` fully tears the sta
 
 ## Follow-ups tracked for later
 
-- **Citation grounding rate**: [Experiment 03](experiments/03-chunking-retrieval-validation.md) and [Experiment 04](experiments/04-indexing-strategy.md) validated chunking and hybrid combination against real precision@k / hit-rate@k, but grounding rate needs an actual answer-generation step with citations — revisit once workflow [02](designs/02-retrieval-agents.md)'s retrieval agents exist
-- **Chunk granularity ("small-to-big")** ([02](designs/02-retrieval-agents.md#indexing-strategy)): still an open, reasoned-but-unvalidated decision — like grounding rate, needs the generator/verifier step to measure meaningfully, not just retrieval-only metrics
+- **Citation grounding rate**: measured for real in [Experiment 06](experiments/06-production-eval.md) (0.45) - lower than it should be, because `extract_citations`' snippet restates the generator's own claim rather than quoting the underlying record. Concrete fix identified but not yet implemented: have `resolve_citations` substitute a genuine excerpt from the product's own record for the snippet field, since it already does a real DynamoDB lookup per citation
+- **Chunk granularity ("small-to-big")** ([02](designs/02-retrieval-agents.md#indexing-strategy)): still an open, reasoned-but-unvalidated decision - needs a dedicated experiment run through [Experiment 06](experiments/06-production-eval.md)'s harness once it exists as an alternate `AgentConfig` to compare against
+- **Eval set scale**: [Experiment 06](experiments/06-production-eval.md) ran 20 synthetically-labeled queries, not the design's 50-100 hand-labeled pairs - the harness scales mechanically, just needs the added Bedrock spend/rating effort to be worth it
 
 ## Suggested build order
 

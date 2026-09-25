@@ -82,6 +82,18 @@ A CloudWatch alarm on a sustained drop in `JudgeGroundednessScore` or `CitationG
 
 **When it runs**: manually triggered after any change to prompts, model versions, retrieval configuration, or chunking strategy — not continuously. A portfolio project doesn't need a live CI eval gate, and each run costs Bedrock tokens.
 
+## Implementation notes
+
+**Done for real, deployed and verified live** — `RagEcommerce-Observability` (`infra/stacks/observability_stack.py`):
+
+**Cost guardrails**: a real `AWS::Budgets::Budget` ($100/month, `ACTUAL` spend) with two SNS-notified thresholds (80%, 100%) exactly as designed, an SNS topic (`rag-ecommerce-alerts`) with an email subscription and the resource policy `budgets.amazonaws.com` needs to actually publish to it, and `Project: rag-ecommerce` tagged onto every resource in the app (`cdk.Tags.of(app).add(...)` in `infra/app.py`) for Cost Explorer isolation. Verified live via `aws budgets describe-budgets` (real $100 budget present) and `aws sns list-subscriptions-by-topic` (real pending email confirmation — AWS emails a confirm link to the subscribed address; alerts won't deliver until it's clicked).
+
+**Infrastructure metrics**: a real CloudWatch dashboard (`rag-ecommerce`) built from the actual deployed resources — DynamoDB consumed capacity/throttles for all three tables, OpenSearch cluster health/search latency, Bedrock invocations/throttles/latency, Step Functions execution success/failure for the refresh pipeline, and the two API Lambdas' errors/duration — plus a widget for the eval metrics below. Referenced by resource *name*, not by importing other stacks' CDK objects, so this stack has no hard deploy-ordering dependency on them (a metric with no data yet just shows empty, not a CFN error). Spot-verified live with `get-metric-statistics` against real Lambda invocation counts and DynamoDB capacity from this session's own testing.
+
+**Alarms**: three real `AWS::CloudWatch::Alarm` resources wired to the same SNS topic — refresh-pipeline failed executions, each API Lambda's error count, and the Reviews table's throttled requests (the table under the most write load). A real bug caught while building these: DynamoDB table names are unresolved CDK tokens at synth time, not literal strings — a `"Reviews" in name` substring check to auto-detect which table was "the Reviews one" silently matched nothing and fell back to the wrong table (`cdk synth` showed the alarm's `Dimensions` pointing at `ProductsTable`'s export). Fixed by passing `reviews_table_name` explicitly instead of guessing from a list.
+
+**Evaluation framework**: `scripts/eval/run_production_eval.py` + `eval_utils.py` — a real harness against the *deployed* system (not a throwaway index like the earlier retrieval-only experiments), publishing real custom metrics to CloudWatch under `RAGEcommerce/Eval` with the `Model`/`AgentConfig`/`EmbeddingModel` dimensions the design calls for. Run for real (20 queries) — see [Experiment 06](experiments/06-production-eval.md) for the full method, metric definitions, and results, including a genuine finding the harness surfaced (citation snippets are self-referential post-workflow-04) that no individual workflow's own verification step had caught. Scoped down from the design's 50–100 hand-labeled pairs to 20 synthetically-labeled ones — flagged explicitly in the experiment doc, not silently substituted.
+
 ## Status
 
-Not started — see [../PROGRESS.md](../PROGRESS.md)
+**Complete** (cost guardrails, dashboard, alarms, and a real — if smaller-than-spec — eval harness all deployed and run for real). See [../PROGRESS.md](../PROGRESS.md) and [Experiment 06](experiments/06-production-eval.md).

@@ -44,7 +44,7 @@ class UploadStack(Stack):
         # Dockerfile/excludes - CDK hashes the build context, not the `cmd`
         # override, so this builds and pushes the underlying image once and
         # reuses it for both, only the per-function Lambda command differs.
-        presign_upload_fn = lambda_.DockerImageFunction(
+        self.presign_upload_fn = presign_upload_fn = lambda_.DockerImageFunction(
             self,
             "PresignUploadFunction",
             code=lambda_.DockerImageCode.from_image_asset(
@@ -64,7 +64,7 @@ class UploadStack(Stack):
         # itself (which needs no IAM permission, it's local SigV4 signing).
         data_bucket.grant_write(presign_upload_fn, "query-images/*")
 
-        submit_query_fn = lambda_.DockerImageFunction(
+        self.submit_query_fn = submit_query_fn = lambda_.DockerImageFunction(
             self,
             "SubmitQueryFunction",
             code=lambda_.DockerImageCode.from_image_asset(
