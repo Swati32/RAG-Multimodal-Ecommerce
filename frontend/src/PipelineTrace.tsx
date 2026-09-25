@@ -18,7 +18,13 @@ function Arrow() {
 
 export function PipelineTrace({ trace }: { trace: Trace }) {
   const specialistNames = Object.keys(trace.dispatch_decision);
-  const dispatchedNames = specialistNames.filter((name) => trace.dispatch_decision[name]);
+  // trace.specialists (not dispatch_decision) is the authoritative "what
+  // actually ran" record - the router sometimes runs search_agent to
+  // resolve a product by name even when it didn't originally pick it
+  // (e.g. graph_agent/lookup_agent need an exact id search can find from a
+  // shopper's description), so a specialist can appear here without being
+  // marked active in step 1. That's not a bug, it's the real sequence.
+  const dispatchedNames = Object.keys(trace.specialists);
   const dropped = trace.citations ? trace.citations.drafted - trace.citations.verified : 0;
 
   return (
@@ -41,8 +47,8 @@ export function PipelineTrace({ trace }: { trace: Trace }) {
           <>
             <Arrow />
             <div className="trace-stage">
-              <div className="trace-stage-label">2. Dispatched in parallel</div>
-              <div className="trace-stage-hint">Results each specialist actually found</div>
+              <div className="trace-stage-label">2. Actually ran</div>
+              <div className="trace-stage-hint">Results each specialist found - may include one not shown above, run to look up a product by name first</div>
               <div className="trace-specialists">
                 {dispatchedNames.map((name) => {
                   const specialist = trace.specialists[name];

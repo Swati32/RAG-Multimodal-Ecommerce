@@ -47,7 +47,7 @@ class AgentsStack(Stack):
         self.search_agent = self._build_search_agent(search_domain)
         self.graph_agent = self._build_graph_agent(graph_edges_table)
         self.image_agent = self._build_image_agent(search_domain)
-        self.router = self._build_router(products_table)
+        self.router = self._build_router(products_table, reviews_table)
 
     def _build_runtime(self, construct_id: str, *, runtime_name: str, dockerfile: str, environment_variables: dict) -> bedrockagentcore.Runtime:
         runtime = bedrockagentcore.Runtime(
@@ -112,7 +112,7 @@ class AgentsStack(Stack):
         search_domain.grant_read_write(runtime.role)
         return runtime
 
-    def _build_router(self, products_table: dynamodb.ITableV2) -> bedrockagentcore.Runtime:
+    def _build_router(self, products_table: dynamodb.ITableV2, reviews_table: dynamodb.ITableV2) -> bedrockagentcore.Runtime:
         runtime = self._build_runtime(
             "RouterRuntime",
             runtime_name="rag_ecommerce_router",
@@ -123,13 +123,16 @@ class AgentsStack(Stack):
                 "LOOKUP_AGENT_ARN": self.lookup_agent.agent_runtime_arn,
                 "IMAGE_AGENT_ARN": self.image_agent.agent_runtime_arn,
                 "PRODUCTS_TABLE": products_table.table_name,
+                "REVIEWS_TABLE": reviews_table.table_name,
             },
         )
         for specialist in (self.search_agent, self.graph_agent, self.lookup_agent, self.image_agent):
             specialist.grant_invoke_runtime(runtime.role)
-        # Citation resolution (title/image_url) after the verifier - see
+        # Citation resolution (title/image_url, plus a couple of real
+        # reviews per product card) after the verifier - see
         # answer_generation.resolve_citations.
         products_table.grant_read_data(runtime.role)
+        reviews_table.grant_read_data(runtime.role)
         return runtime
 
     def _build_graph_agent(self, graph_edges_table: dynamodb.ITableV2) -> bedrockagentcore.Runtime:

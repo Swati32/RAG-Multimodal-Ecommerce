@@ -3,8 +3,8 @@ import pytest
 from moto import mock_aws
 
 from agents.answer_generation import extract_citations, resolve_citations, stream_answer, verify_citations
-from ingestion.dynamo_writer import upsert_product
-from ingestion.models import Product
+from ingestion.dynamo_writer import upsert_product, upsert_review
+from ingestion.models import Product, Review
 
 
 class StubBedrockClient:
@@ -112,19 +112,48 @@ def products_table():
         yield table
 
 
-def test_resolve_citations_attaches_product_fields(products_table):
-    resolved = resolve_citations(products_table, [{"product_id": "P1", "snippet": "lasts all day"}])
+@pytest.fixture
+def reviews_table():
+    # products_table and reviews_table each run their own mock_aws() context
+    # - moto scopes mocked AWS state per active mock_aws(), so nesting two
+    # fixtures like this keeps both tables visible within one test, matching
+    # the pattern used for the router/data-access tests elsewhere.
+    with mock_aws():
+        dynamodb = boto3.resource("dynamodb", region_name="us-east-2")
+        table = dynamodb.create_table(
+            TableName="Reviews",
+            KeySchema=[{"AttributeName": "product_id", "KeyType": "HASH"}, {"AttributeName": "review_id", "KeyType": "RANGE"}],
+            AttributeDefinitions=[{"AttributeName": "product_id", "AttributeType": "S"}, {"AttributeName": "review_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        upsert_review(table, Review(review_id="R1", product_id="P1", rating=5.0, text="Sounds amazing.", timestamp=1))
+        yield table
+
+
+def test_resolve_citations_attaches_product_fields_and_reviews(products_table, reviews_table):
+    resolved = resolve_citations(products_table, reviews_table, [{"product_id": "P1", "snippet": "lasts all day"}])
 
     assert resolved == [
         {
             "product_id": "P1",
             "title": "Wireless Headphones",
+            "brand": "Acme",
             "image_url": "https://example.com/p1.jpg",
             "product_url": "/products/P1",
             "snippet": "lasts all day",
+            "rank_reason": "",
+            "reviews": [{"rating": 5.0, "text": "Sounds amazing."}],
         }
     ]
 
 
-def test_resolve_citations_skips_ids_with_no_matching_product(products_table):
-    assert resolve_citations(products_table, [{"product_id": "MISSING", "snippet": "x"}]) == []
+def test_resolve_citations_attaches_the_consolidation_rank_reason_when_given(products_table, reviews_table):
+    resolved = resolve_citations(
+        products_table, reviews_table, [{"product_id": "P1", "snippet": "x"}], reasons_by_id={"P1": "cheapest match"}
+    )
+
+    assert resolved[0]["rank_reason"] == "cheapest match"
+
+
+def test_resolve_citations_skips_ids_with_no_matching_product(products_table, reviews_table):
+    assert resolve_citations(products_table, reviews_table, [{"product_id": "MISSING", "snippet": "x"}]) == []

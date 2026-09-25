@@ -100,21 +100,32 @@ function App() {
         <section className="result">
           <p className="answer">{renderWithBold(result.answer)}</p>
 
-          {result.trace && <PipelineTrace trace={result.trace} />}
-
           {result.citations.length > 0 && (
             <div className="citations">
               {result.citations.map((citation) => (
                 <a key={citation.product_id} className="citation-card" href={citation.product_url} target="_blank" rel="noreferrer">
                   {citation.image_url && <img src={citation.image_url} alt={citation.title} />}
                   <div className="citation-body">
+                    {citation.brand && <div className="citation-brand">{citation.brand}</div>}
                     <h3>{citation.title}</h3>
-                    <p>{renderWithBold(citation.snippet)}</p>
+                    {citation.rank_reason && <p className="citation-reason">Why this rank: {citation.rank_reason}</p>}
+                    <p className="citation-snippet">{renderWithBold(citation.snippet)}</p>
+                    {citation.reviews.length > 0 && (
+                      <div className="citation-reviews">
+                        {citation.reviews.map((review, i) => (
+                          <p key={i} className="citation-review">
+                            <span className="citation-review-rating">{"★".repeat(Math.round(review.rating))}</span> "{review.text}"
+                          </p>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </a>
               ))}
             </div>
           )}
+
+          {result.trace && <PipelineTrace trace={result.trace} />}
         </section>
       )}
     </div>

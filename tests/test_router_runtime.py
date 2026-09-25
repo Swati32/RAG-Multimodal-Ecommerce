@@ -7,8 +7,8 @@ from botocore.exceptions import ReadTimeoutError
 from moto import mock_aws
 
 import agents.router_runtime as runtime
-from ingestion.dynamo_writer import upsert_product
-from ingestion.models import Product
+from ingestion.dynamo_writer import upsert_product, upsert_review
+from ingestion.models import Product, Review
 
 
 class StubBedrockClient:
@@ -49,10 +49,12 @@ class StubAgentCoreClient:
         self._results_by_arn = results_by_arn
         self._timeout_arns = timeout_arns
         self.invoked_arns = []
+        self.calls: list[dict] = []
 
     def invoke_agent_runtime(self, **kwargs):
         arn = kwargs["agentRuntimeArn"]
         self.invoked_arns.append(arn)
+        self.calls.append(kwargs)
         if arn in self._timeout_arns:
             raise ReadTimeoutError(endpoint_url="https://bedrock-agentcore.us-east-2.amazonaws.com")
         return {"response": _StubStreamingBody({"results": self._results_by_arn.get(arn, []), "message": "ok"})}
@@ -91,7 +93,15 @@ def products_table(monkeypatch):
                 brand="Acme",
             ),
         )
+        reviews_table = dynamodb.create_table(
+            TableName="Reviews",
+            KeySchema=[{"AttributeName": "product_id", "KeyType": "HASH"}, {"AttributeName": "review_id", "KeyType": "RANGE"}],
+            AttributeDefinitions=[{"AttributeName": "product_id", "AttributeType": "S"}, {"AttributeName": "review_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        upsert_review(reviews_table, Review(review_id="R1", product_id="P2", rating=5.0, text="Sounds amazing.", timestamp=1))
         monkeypatch.setenv("PRODUCTS_TABLE", "Products")
+        monkeypatch.setenv("REVIEWS_TABLE", "Reviews")
         monkeypatch.setattr(runtime, "_dynamodb", dynamodb)
         yield table
 
@@ -114,12 +124,99 @@ def test_decide_dispatch_forces_image_agent_off_when_no_image_given():
     assert decision == {"search_agent": True, "graph_agent": False, "lookup_agent": False, "image_agent": False}
 
 
-def test_run_consolidation_extracts_ranked_ids():
-    bedrock = StubBedrockClient(['{"ranked_product_ids": ["P2", "P1"]}'])
+def test_run_consolidation_extracts_ranked_products_with_reasons():
+    bedrock = StubBedrockClient(['{"ranked_products": [{"product_id": "P2", "reason": "cheapest"}, {"product_id": "P1", "reason": "highest rated"}]}'])
 
     ranked = runtime.run_consolidation(bedrock, "find a moisturizer", [{"product_id": "P1"}, {"product_id": "P2"}])
 
-    assert ranked == ["P2", "P1"]
+    assert ranked == [{"product_id": "P2", "reason": "cheapest"}, {"product_id": "P1", "reason": "highest rated"}]
+
+
+def test_extract_explicit_product_id_finds_a_real_shaped_asin():
+    assert runtime._extract_explicit_product_id("tell me about B0845LNDJK please") == "B0845LNDJK"
+
+
+def test_extract_explicit_product_id_returns_none_for_a_plain_name():
+    assert runtime._extract_explicit_product_id("that charcoal soap bar") is None
+
+
+def test_resolve_product_id_by_name_returns_the_top_search_result_id(arn_env):
+    agentcore = StubAgentCoreClient({"arn:search": [{"product_id": "P9", "text": "soap"}, {"product_id": "P2", "text": "other"}]})
+
+    resolved_id, results = runtime.resolve_product_id_by_name(agentcore, "charcoal soap bar")
+
+    assert resolved_id == "P9"
+    assert len(results) == 2
+
+
+def test_resolve_product_id_by_name_degrades_to_none_on_timeout(monkeypatch):
+    agentcore = StubAgentCoreClient({}, timeout_arns={"arn:search"})
+    monkeypatch.setenv("SEARCH_AGENT_ARN", "arn:search")
+
+    resolved_id, results = runtime.resolve_product_id_by_name(agentcore, "charcoal soap bar")
+
+    assert resolved_id is None
+    assert results == []
+
+
+def test_invoke_resolves_a_product_id_via_search_before_dispatching_graph_agent(arn_env, products_table, monkeypatch):
+    """Real bug, reported live: graph_agent only traverses DynamoDB by exact
+    product_id (see graph_tools.py) but has no by-name search capability of
+    its own - a shopper naming a product by description rather than its id
+    made the router correctly dispatch graph_agent, which then silently
+    returned 0 results, every time. Fixed by resolving an id via
+    search_agent first whenever graph_agent/lookup_agent are dispatched
+    without an explicit id already in the question."""
+    bedrock = StubBedrockClient(
+        texts=[
+            '{"search_agent": false, "graph_agent": true, "lookup_agent": false, "image_agent": false}',  # routing
+            '{"ranked_products": [{"product_id": "P2", "reason": "matches request"}, {"product_id": "P3", "reason": "same brand"}]}',  # consolidation
+            '{"verdicts": [{"product_id": "P3", "grounded": true}]}',  # verification
+        ],
+        stream_chunks=["Same brand item. [[P3]]"],
+    )
+    agentcore = StubAgentCoreClient(
+        {
+            "arn:search": [{"product_id": "P2", "text": "charcoal soap"}],
+            "arn:graph": [{"product_id": "P3", "relation": "same_brand"}],
+        }
+    )
+    monkeypatch.setattr(runtime, "_bedrock", bedrock)
+    monkeypatch.setattr(runtime, "_agentcore", agentcore)
+
+    _, response = _invoke({"prompt": "find a charcoal soap bar and what else that brand makes"})
+
+    # search_agent ran even though the router itself never asked for it -
+    # it's how graph_agent got an id to work with at all
+    assert set(agentcore.invoked_arns) == {"arn:search", "arn:graph"}
+    assert set(response["dispatched"]) == {"search_agent", "graph_agent"}
+    assert response["trace"]["specialists"]["search_agent"]["result_count"] == 1
+
+    # graph_agent's own prompt was enriched with the id search resolved,
+    # not left to guess from the shopper's name/description alone
+    graph_call = next(call for call in agentcore.calls if call["agentRuntimeArn"] == "arn:graph")
+    graph_payload = json.loads(graph_call["payload"])
+    assert "product_id=P2" in graph_payload["prompt"]
+
+
+def test_invoke_skips_id_resolution_when_the_question_already_has_an_explicit_id(arn_env, products_table, monkeypatch):
+    bedrock = StubBedrockClient(
+        texts=[
+            '{"search_agent": false, "graph_agent": true, "lookup_agent": false, "image_agent": false}',  # routing
+            '{"ranked_products": [{"product_id": "P2", "reason": "matches request"}]}',  # consolidation
+            '{"verdicts": [{"product_id": "P2", "grounded": true}]}',  # verification
+        ],
+        stream_chunks=["Same brand item. [[P2]]"],
+    )
+    agentcore = StubAgentCoreClient({"arn:graph": [{"product_id": "P2", "relation": "same_brand"}]})
+    monkeypatch.setattr(runtime, "_bedrock", bedrock)
+    monkeypatch.setattr(runtime, "_agentcore", agentcore)
+
+    _, response = _invoke({"prompt": "what else does the brand behind B0845LNDJK make"})
+
+    # an explicit id was already given - no need to burn a search call to resolve one
+    assert agentcore.invoked_arns == ["arn:graph"]
+    assert response["dispatched"] == ["graph_agent"]
 
 
 def test_invoke_attaches_the_uploaded_image_to_consolidation(arn_env, products_table, monkeypatch):
@@ -130,7 +227,7 @@ def test_invoke_attaches_the_uploaded_image_to_consolidation(arn_env, products_t
     bedrock = StubBedrockClient(
         texts=[
             '{"search_agent": false, "graph_agent": false, "lookup_agent": false, "image_agent": true}',  # routing
-            '{"ranked_product_ids": ["P2"]}',  # consolidation
+            '{"ranked_products": [{"product_id": "P2", "reason": "matches request"}]}',  # consolidation
             '{"verdicts": [{"product_id": "P2", "grounded": true}]}',  # verification
         ],
         stream_chunks=["Similar item. [[P2]]"],
@@ -153,7 +250,7 @@ def test_invoke_runs_the_full_pipeline_to_a_verified_cited_answer(arn_env, produ
     bedrock = StubBedrockClient(
         texts=[
             '{"search_agent": true, "graph_agent": false, "lookup_agent": false, "image_agent": false}',  # routing
-            '{"ranked_product_ids": ["P2", "P1"]}',  # consolidation
+            '{"ranked_products": [{"product_id": "P2", "reason": "great sound"}, {"product_id": "P1", "reason": "cheaper option"}]}',  # consolidation
             '{"verdicts": [{"product_id": "P2", "grounded": true}]}',  # verification
         ],
         stream_chunks=["The Acme headphones have ", "great sound. [[P2]]"],  # streamed generation
@@ -171,9 +268,12 @@ def test_invoke_runs_the_full_pipeline_to_a_verified_cited_answer(arn_env, produ
         {
             "product_id": "P2",
             "title": "Wireless Headphones",
+            "brand": "Acme",
             "image_url": "https://example.com/p2.jpg",
             "product_url": "/products/P2",
             "snippet": "The Acme headphones have great sound.",
+            "rank_reason": "great sound",
+            "reviews": [{"rating": 5.0, "text": "Sounds amazing."}],
         }
     ]
     # the answer was actually streamed, not assembled and returned in one shot
@@ -210,7 +310,7 @@ def test_invoke_degrades_gracefully_when_one_specialist_times_out(arn_env, produ
     bedrock = StubBedrockClient(
         texts=[
             '{"search_agent": true, "graph_agent": true, "lookup_agent": false, "image_agent": false}',  # routing
-            '{"ranked_product_ids": ["P2"]}',  # consolidation
+            '{"ranked_products": [{"product_id": "P2", "reason": "matches request"}]}',  # consolidation
             '{"verdicts": [{"product_id": "P2", "grounded": true}]}',  # verification
         ],
         stream_chunks=["The Acme headphones have great sound. [[P2]]"],

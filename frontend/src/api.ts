@@ -5,12 +5,20 @@
 
 const API_URL = import.meta.env.VITE_API_URL as string;
 
+export interface Review {
+  rating: number;
+  text: string;
+}
+
 export interface Citation {
   product_id: string;
   title: string;
+  brand: string | null;
   image_url: string | null;
   product_url: string;
   snippet: string;
+  rank_reason: string;
+  reviews: Review[];
 }
 
 export interface SpecialistTrace {

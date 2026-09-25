@@ -25,6 +25,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor
 
 import boto3
@@ -50,6 +51,25 @@ SPECIALIST_ARN_ENV_VARS = {
     "image_agent": "IMAGE_AGENT_ARN",
 }
 
+# GraphAgent/LookupAgent only traverse DynamoDB by exact product_id - they
+# have no by-name search capability of their own (see graph_tools.py's
+# find_related_products, lookup_tools.py's get_product_response). A shopper
+# naming a product by description ("that charcoal soap") rather than its
+# id (e.g. "B0845LNDJK") makes the router correctly *dispatch* graph_agent
+# per its own routing instruction ("already named or implied"), but with
+# nothing for it to actually traverse from - a real, live-confirmed bug:
+# graph_agent dispatched, 0 results, silently. This regex recognizes the
+# dataset's real product_id shape (10-char alphanumeric ASINs, e.g.
+# B09P5FV741, B071F78NNF) to tell "an id was given directly" apart from "a
+# name/description was given" - see _resolve_product_id_by_name below.
+_PRODUCT_ID_PATTERN = re.compile(r"\b[A-Z][A-Z0-9]{9}\b")
+
+
+def _extract_explicit_product_id(text: str) -> str | None:
+    match = _PRODUCT_ID_PATTERN.search(text)
+    return match.group(0) if match else None
+
+
 ROUTING_INSTRUCTION = """You are the router for a multi-agent e-commerce product Q&A system. Given a shopper's question, decide which specialist retrieval agents are relevant - only the ones that actually apply, not every one "just in case".
 
 Specialists:
@@ -62,7 +82,9 @@ Respond with ONLY this JSON, no other text: {"search_agent": <bool>, "graph_agen
 
 CONSOLIDATION_INSTRUCTION = """You are consolidating results from multiple retrieval specialists in an e-commerce product Q&A system into one ranked list of the most relevant products for the shopper's question. The specialists don't share a comparable relevance score - judge relevance yourself from each candidate's content, not any numeric score field.
 
-Respond with ONLY this JSON, no other text: {"ranked_product_ids": [<product_id strings, most relevant first>]}. Include a product_id at most once, and omit any candidate that isn't actually relevant to the question - do not pad the list to include everything."""
+For each product you keep, give a short, specific reason for its rank - grounded in that candidate's actual content (its text/relation/category fields), not a generic phrase like "relevant to the query".
+
+Respond with ONLY this JSON, no other text: {"ranked_products": [{"product_id": "<id>", "reason": "<one short phrase, e.g. \\"cheapest option under budget\\" or \\"highest-rated match for sensitive skin\\">"}]}, most relevant first. Include a product_id at most once, and omit any candidate that isn't actually relevant to the question - do not pad the list to include everything."""
 
 app = BedrockAgentCoreApp()
 _bedrock = bedrock_runtime_client(REGION)
@@ -80,11 +102,33 @@ def decide_dispatch(bedrock, question: str, has_image: bool) -> dict:
     return decision
 
 
-def run_consolidation(bedrock, question: str, candidates: list[dict], image_bytes: bytes | None = None, image_format: str = "jpeg") -> list[str]:
+def run_consolidation(
+    bedrock, question: str, candidates: list[dict], image_bytes: bytes | None = None, image_format: str = "jpeg"
+) -> list[dict]:
+    """Returns [{"product_id": ..., "reason": ...}, ...], most relevant
+    first - the reason is surfaced on the product card in the frontend
+    (see PipelineTrace's sibling, the citation card's rank_reason field),
+    not just used internally for ordering."""
     prompt = f"Question: {question}\n\nCandidates:\n{json.dumps(candidates, indent=2)}"
     return parse_json_response(
         converse_text(bedrock, ROUTING_MODEL_ID, CONSOLIDATION_INSTRUCTION, prompt, image_bytes=image_bytes, image_format=image_format)
-    ).get("ranked_product_ids", [])
+    ).get("ranked_products", [])
+
+
+def resolve_product_id_by_name(agentcore, question: str) -> tuple[str | None, list[dict]]:
+    """Runs search_agent synchronously to resolve a product_id from a
+    shopper's name/description, before graph_agent or lookup_agent - both
+    exact-id-only, see _PRODUCT_ID_PATTERN's docstring above - can do
+    anything useful with it. Returns (resolved id or None, the search
+    results themselves - reused as real candidates, not thrown away once
+    the id is pulled out of them)."""
+    try:
+        results = dispatch_specialist(agentcore, os.environ[SPECIALIST_ARN_ENV_VARS["search_agent"]], {"prompt": question})
+    except (ReadTimeoutError, ConnectTimeoutError):
+        app.logger.warning("search_agent (id resolution) timed out, proceeding without a resolved id")
+        return None, []
+    resolved_id = next((r.get("product_id") for r in results if r.get("product_id")), None)
+    return resolved_id, results
 
 
 @app.entrypoint
@@ -118,13 +162,35 @@ def invoke(payload: dict):
     # dedupe/consolidation genuinely don't care which specialist a
     # candidate came from, only the UI does.
     specialist_trace: dict[str, dict] = {name: {"result_count": 0, "timed_out": False} for name in to_dispatch}
-    if to_dispatch:
-        with ThreadPoolExecutor(max_workers=len(to_dispatch)) as pool:
+
+    # graph_agent/lookup_agent can only traverse/fetch by exact product_id -
+    # if the router dispatched either without the shopper having named one
+    # directly, resolve it via search first rather than let them run with
+    # nothing to work from (a real, live-confirmed bug: graph_agent
+    # dispatched, 0 results, no error - see _PRODUCT_ID_PATTERN above).
+    search_already_run = False
+    needs_id_resolution = ("graph_agent" in to_dispatch or "lookup_agent" in to_dispatch) and _extract_explicit_product_id(question) is None
+    if needs_id_resolution:
+        resolved_id, search_results = resolve_product_id_by_name(_agentcore, question)
+        specialist_trace.setdefault("search_agent", {"result_count": 0, "timed_out": False})
+        specialist_trace["search_agent"]["result_count"] = len(search_results)
+        candidates.extend(search_results)
+        search_already_run = True
+        if "search_agent" not in to_dispatch:
+            to_dispatch.append("search_agent")
+        if resolved_id:
+            note = f"\n\n(The product being discussed is product_id={resolved_id}.)"
+            specialist_payloads["graph_agent"]["prompt"] = question + note
+            specialist_payloads["lookup_agent"]["prompt"] = question + note
+
+    remaining_to_dispatch = [name for name in to_dispatch if name != "search_agent" or not search_already_run]
+    if remaining_to_dispatch:
+        with ThreadPoolExecutor(max_workers=len(remaining_to_dispatch)) as pool:
             futures = {
                 name: pool.submit(
                     dispatch_specialist, _agentcore, os.environ[SPECIALIST_ARN_ENV_VARS[name]], specialist_payloads[name]
                 )
-                for name in to_dispatch
+                for name in remaining_to_dispatch
             }
             for name, future in futures.items():
                 try:
@@ -148,7 +214,9 @@ def invoke(payload: dict):
         yield {"type": "final", "answer": answer, "citations": [], "dispatched": to_dispatch, "trace": trace}
         return
 
-    ranked_product_ids = run_consolidation(_bedrock, question, candidates, image_bytes=image_bytes, image_format=image_format)
+    ranked_products = run_consolidation(_bedrock, question, candidates, image_bytes=image_bytes, image_format=image_format)
+    ranked_product_ids = [item["product_id"] for item in ranked_products if item.get("product_id")]
+    reasons_by_id = {item["product_id"]: item.get("reason", "") for item in ranked_products if item.get("product_id")}
     results = dedupe_and_rank(candidates, ranked_product_ids)
     consolidation_trace = {"candidate_count": len(candidates), "ranked_count": len(results)}
 
@@ -170,7 +238,9 @@ def invoke(payload: dict):
 
     clean_answer, raw_citations = extract_citations(answer_text, results)
     verified_citations = verify_citations(_bedrock, VERIFIER_MODEL_ID, raw_citations, results)
-    resolved_citations = resolve_citations(_dynamodb.Table(os.environ["PRODUCTS_TABLE"]), verified_citations)
+    resolved_citations = resolve_citations(
+        _dynamodb.Table(os.environ["PRODUCTS_TABLE"]), _dynamodb.Table(os.environ["REVIEWS_TABLE"]), verified_citations, reasons_by_id
+    )
 
     citations_trace = {"drafted": len(raw_citations), "verified": len(resolved_citations)}
     trace = {"dispatch_decision": dispatch_decision, "specialists": specialist_trace, "consolidation": consolidation_trace, "citations": citations_trace}
